@@ -19,3 +19,14 @@ export const decryptLoraRawData = (data, nwkskeyHexString, appkeyHexString) => {
   console.log('MIC is INCORRECT!!!')
   return [null, null]
 }
+
+// @param msg raw string data received from gateway usually in Base64 format
+export const decryptLoraRawDataAsconMac = (
+  data,
+  nwkskeyHexString,
+  appkeyHexString
+) => {
+  const nwkskey = Buffer.from(nwkskeyHexString, 'hex')
+  const appkey = Buffer.from(appkeyHexString, 'hex')
+  // Pass Base64 package to C program
+}
