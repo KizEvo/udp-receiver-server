@@ -7,7 +7,7 @@
 
 import 'dotenv/config'
 import dgram from 'dgram'
-import { decryptLoraRawData } from './lorawan.js'
+import { decryptLoraRawData, decryptLoraRawDataAsconMac } from './lorawan.js'
 
 const SERVER_PORT = 1700
 
@@ -110,15 +110,17 @@ const networkServerProcessData = (state, buff) => {
     // rxpk may contain multiple RF package
     // so we loop through to check
     for (let i = 0; i < jsonObject.rxpk.length; i++) {
-      const [data, packet] = decryptLoraRawData(
+      const [data, packet] = decryptLoraRawDataAsconMac(
         jsonObject.rxpk[i].data,
         process.env.NWKSKEY1,
         process.env.APPSKEY1
       )
       if (data != null) {
-        console.log('RF captured data:')
+        console.log(`RF captured data inst ${i}:`)
         console.log(data)
         console.log(packet)
+      } else {
+        console.log(`Failed to decrypt package inst ${i}`)
       }
     }
   } else if ((state = UDP_PKT_FWD_STATES.DOWNSTREAM)) {

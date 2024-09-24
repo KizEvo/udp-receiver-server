@@ -1,4 +1,18 @@
 import lora from 'lora-packet'
+import { exec } from 'child_process'
+
+const hexStringToByteArray = (string) => {
+  if (string.length % 2 !== 0) {
+    throw new Error('Invalid string input length')
+  }
+  const byteArray = []
+  for (let i = 0; i < string.length; i += 2) {
+    const hexPair = string.substring(i, i + 2)
+    const byte = parseInt(hexPair, 16)
+    byteArray.push(byte)
+  }
+  return byteArray
+}
 
 // @param msg raw string data received from gateway usually in Base64 format
 // @retval [payloadDecrypted, package] Unencrypted payload and the package info (which contain DevAddr, MIC, FCnt..)
@@ -29,4 +43,17 @@ export const decryptLoraRawDataAsconMac = (
   const nwkskey = Buffer.from(nwkskeyHexString, 'hex')
   const appkey = Buffer.from(appkeyHexString, 'hex')
   // Pass Base64 package to C program
+  const command = `./asconmacav12/out ${data}`
+  exec(command, (error, stdout) => {
+    if (error) {
+      console.error(`Error: ${error.message}`)
+      return [null, null]
+    }
+    const lines = stdout.trim().split('\n')
+    const info = []
+    for (let i = 0; i < 5; i++) {
+      info.push(hexStringToByteArray(lines[i]))
+    }
+  })
+  return [info, info[0]]
 }
