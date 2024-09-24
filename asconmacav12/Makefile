@@ -1,7 +1,7 @@
 all:
 	@echo "Usage:"
 	@echo "make asconmac"
-	@echo "help: The output is a 128 bit tags, display in hex format"
+	@echo "help: The output is consists of decrypted payload, device number, FCnt, FPort, MHDR.
 	@echo "      Usage './out <base64_encoded_string>'"
 
 asconmac:
