@@ -11,7 +11,7 @@ const hexStringToByteArray = (string) => {
     const byte = parseInt(hexPair, 16)
     byteArray.push(byte)
   }
-  return byteArray
+  return Buffer.from(byteArray)
 }
 
 // @param msg raw string data received from gateway usually in Base64 format
@@ -35,25 +35,26 @@ export const decryptLoraRawData = (data, nwkskeyHexString, appkeyHexString) => {
 }
 
 // @param msg raw string data received from gateway usually in Base64 format
-export const decryptLoraRawDataAsconMac = (
+export const decryptLoraRawDataAsconMac = async (
   data,
   nwkskeyHexString,
   appkeyHexString
 ) => {
-  const nwkskey = Buffer.from(nwkskeyHexString, 'hex')
-  const appkey = Buffer.from(appkeyHexString, 'hex')
-  // Pass Base64 package to C program
-  const command = `./asconmacav12/out ${data}`
-  exec(command, (error, stdout) => {
-    if (error) {
-      console.error(`Error: ${error.message}`)
-      return [null, null]
-    }
-    const lines = stdout.trim().split('\n')
+  return new Promise((resolve, reject) => {
+    // Pass Base64 package to C program
+    const command = `./asconmacav12/out "${data}"`
     const info = []
-    for (let i = 0; i < 5; i++) {
-      info.push(hexStringToByteArray(lines[i]))
-    }
+    exec(command, (error, stdout) => {
+      if (error) {
+        console.error(`Error: ${error.message}`)
+        resolve([null, null])
+      }
+      console.log('Calculating Asconmacav12')
+      const lines = stdout.trim().split('\n')
+      for (let i = 0; i < 5; i++) {
+        info.push(hexStringToByteArray(lines[i]))
+      }
+      resolve([info, info[0]])
+    })
   })
-  return [info, info[0]]
 }

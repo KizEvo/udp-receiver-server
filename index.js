@@ -9,6 +9,23 @@ import 'dotenv/config'
 import dgram from 'dgram'
 import { decryptLoraRawData, decryptLoraRawDataAsconMac } from './lorawan.js'
 
+// Import the functions you need from the SDKs you need
+import { initializeApp } from 'firebase/app'
+
+// Firebase configuration
+const firebaseConfig = {
+  apiKey: process.env.FB_API_KEY,
+  authDomain: process.env.FB_AUTH_DOMAIN,
+  projectId: process.env.FB_PROJECT_ID,
+  storageBucket: process.env.FB_STORAGE_BUCKET,
+  messagingSenderId: process.env.FB_MSG_SENDER_ID,
+  appId: process.env.FB_APP_ID,
+  measurementId: process.env.FB_MEASUREMENT_ID,
+}
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig)
+
 const SERVER_PORT = 1700
 
 const UDP_PACKET_PROTOCOL_VERSION_OFFSET = 0
@@ -99,7 +116,7 @@ server.on('message', (msg, rinfo) => {
 
 // @param state UDP_PKT_FWD_STATES object member
 // @param buff The msg Buffer type
-const networkServerProcessData = (state, buff) => {
+const networkServerProcessData = async (state, buff) => {
   console.log('Process LoRa package..')
   if (state == UDP_PKT_FWD_STATES.UPSTREAM) {
     const jsonObject = pushDataBuffToJsonObject(buff)
@@ -110,7 +127,7 @@ const networkServerProcessData = (state, buff) => {
     // rxpk may contain multiple RF package
     // so we loop through to check
     for (let i = 0; i < jsonObject.rxpk.length; i++) {
-      const [data, packet] = decryptLoraRawDataAsconMac(
+      const [data, packet] = await decryptLoraRawDataAsconMac(
         jsonObject.rxpk[i].data,
         process.env.NWKSKEY1,
         process.env.APPSKEY1
