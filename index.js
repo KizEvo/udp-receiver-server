@@ -11,6 +11,15 @@ import { decryptLoraRawData, decryptLoraRawDataAsconMac } from './lorawan.js'
 
 // Import the functions you need from the SDKs you need
 import { initializeApp } from 'firebase/app'
+import {
+  getFirestore,
+  doc,
+  collection,
+  setDoc,
+  deleteDoc,
+  getDoc,
+  updateDoc,
+} from 'firebase/firestore'
 
 // Firebase configuration
 const firebaseConfig = {
@@ -24,7 +33,39 @@ const firebaseConfig = {
 }
 
 // Initialize Firebase
-const app = initializeApp(firebaseConfig)
+const firebaseApp = initializeApp(firebaseConfig)
+const firebaseDb = getFirestore(firebaseApp)
+// Get date
+const date = new Date()
+const dateString = date.toDateString().replaceAll(' ', '')
+// Get document reference
+const firstId = 'collection-metadata'
+const coll = 'sensorDataCollection' + dateString
+const firstDocRef = doc(firebaseDb, coll, firstId)
+
+// Set doc to collection
+const firstDocument = {
+  count: 0,
+  sensorType: 'temperature-humidity',
+}
+
+const initialDoc = await getDoc(firstDocRef)
+let initialDocData
+if (!initialDoc.exists()) {
+  console.log('First document or collection does not exist, creating one..')
+  await setDoc(firstDocRef, firstDocument)
+  console.log('Created first document successfully!')
+} else {
+  initialDocData = initialDoc.data()
+  console.log(
+    `First document already exist!\nsensor data count: ${initialDocData.count}, type: ${initialDocData.sensorType}`
+  )
+  if (initialDocData.sensorType !== firstDocument.sensorType) {
+    throw new Error(
+      `Mismatch sensor type between database (${initialDocData.sensorType}) and current type (${firstDocument.sensorType})`
+    )
+  }
+}
 
 const SERVER_PORT = 1700
 
