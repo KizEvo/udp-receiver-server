@@ -16,10 +16,13 @@ import {
   doc,
   collection,
   setDoc,
-  deleteDoc,
   getDoc,
   updateDoc,
+  addDoc,
 } from 'firebase/firestore'
+
+// Device Address
+const deviceAddresses = [process.env.DEVADDR1]
 
 // Firebase configuration
 const firebaseConfig = {
@@ -49,12 +52,14 @@ const firstDocument = {
   sensorType: 'temperature-humidity',
 }
 
-const initialDoc = await getDoc(firstDocRef)
+let initialDoc = await getDoc(firstDocRef)
 let initialDocData
 if (!initialDoc.exists()) {
   console.log('First document or collection does not exist, creating one..')
   await setDoc(firstDocRef, firstDocument)
   console.log('Created first document successfully!')
+  initialDoc = await getDoc(firstDocRef)
+  initialDocData = initialDoc.data()
 } else {
   initialDocData = initialDoc.data()
   console.log(
@@ -74,6 +79,14 @@ const UDP_PACKET_RANDOM_TOKEN_OFFSET = 1
 const UDP_PACKET_TYPE_OFFSET = 3
 const UDP_PACKET_GATEWAY_UID_OFFSET = 4
 const UDP_PACKET_JSON_OBJ_OFFSET = 12
+
+const ASCON_MAC_DATA_OFFSET = {
+  PAYLOAD: 0,
+  DEV_NUMB: 1,
+  FCNT: 2,
+  FPORT: 3,
+  MHDR: 4,
+}
 
 const UDP_PACKET_TYPE = {
   PUSH_DATA: 0x00,
@@ -175,8 +188,23 @@ const networkServerProcessData = async (state, buff) => {
       )
       if (data != null) {
         console.log(`RF captured data inst ${i}:`)
-        console.log(data)
-        console.log(packet)
+        let sensorDoc = {
+          dev_addr:
+            deviceAddresses[
+              data[ASCON_MAC_DATA_OFFSET.DEV_NUMB].readInt8() - 1
+            ],
+          temperature:
+            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][2]) +
+            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][3]) / 10.0,
+          humidity:
+            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][0]) +
+            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][1]) / 10.0,
+          inst: initialDocData.count,
+        }
+        initialDocData.count++
+        await updateDoc(firstDocRef, initialDocData)
+        let docRef = await addDoc(collection(firebaseDb, coll), sensorDoc)
+        console.log('Document written with ID: ', docRef.id)
       } else {
         console.log(`Failed to decrypt package inst ${i}`)
       }
