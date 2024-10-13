@@ -49,9 +49,21 @@ const firstDocRef = doc(firebaseDb, coll, firstId)
 // Set doc to collection
 const firstDocument = {
   count: 0,
-  sensorType: 'temperature-humidity',
+  sensorType: 'distance-sensor',
+  floor: {
+    f1: [],
+    f2: [],
+  },
 }
 
+// Init firstDocument
+for (let i = 0; i < 8; i++) {
+  firstDocument.floor.f1.push('empty')
+  firstDocument.floor.f2.push('empty')
+}
+firstDocument.count = 2 // two floor
+
+// Create firstDocument on database
 let initialDoc = await getDoc(firstDocRef)
 let initialDocData
 if (!initialDoc.exists()) {
@@ -188,23 +200,29 @@ const networkServerProcessData = async (state, buff) => {
       )
       if (data != null) {
         console.log(`RF captured data inst ${i}:`)
-        let sensorDoc = {
-          dev_addr:
-            deviceAddresses[
-              data[ASCON_MAC_DATA_OFFSET.DEV_NUMB].readInt8() - 1
-            ],
-          temperature:
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][2]) +
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][3]) / 10.0,
-          humidity:
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][0]) +
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][1]) / 10.0,
-          inst: initialDocData.count,
+        const floor = data[ASCON_MAC_DATA_OFFSET.PAYLOAD][0] & 0x3
+        const column = (data[ASCON_MAC_DATA_OFFSET.PAYLOAD][1] & 0xf0) >> 4
+        const row = data[ASCON_MAC_DATA_OFFSET.PAYLOAD][1] & 0xf
+        const parking_slot_state =
+          (data[ASCON_MAC_DATA_OFFSET.PAYLOAD][0] & 0xc) >> 2
+        const parking_slot_state_str =
+          parking_slot_state === 0 ? 'empty' : 'full'
+        console.log(
+          'floor',
+          floor,
+          'column',
+          column,
+          'row',
+          row,
+          'state',
+          parking_slot_state_str
+        )
+        if (floor == 1) {
+          initialDocData.floor.f1[row * column - 1] = parking_slot_state_str
+        } else {
+          initialDocData.floor.f2[row * column - 1] = parking_slot_state_str
         }
-        initialDocData.count++
         await updateDoc(firstDocRef, initialDocData)
-        let docRef = await addDoc(collection(firebaseDb, coll), sensorDoc)
-        console.log('Document written with ID: ', docRef.id)
       } else {
         console.log(`Failed to decrypt package inst ${i}`)
       }
