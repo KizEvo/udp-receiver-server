@@ -49,7 +49,6 @@ export const decryptLoraRawDataAsconMac = async (
         console.error(`Error: ${error.message}`)
         resolve([null, null])
       }
-      console.log('Calculating Asconmacav12')
       const lines = stdout.trim().split('\n')
       for (let i = 0; i < lines.length; i++) {
         info.push(hexStringToByteArray(lines[i]))

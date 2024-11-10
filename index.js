@@ -46,32 +46,6 @@ const firstId = 'collection-metadata'
 const coll = 'sensorDataCollection' + dateString
 const firstDocRef = doc(firebaseDb, coll, firstId)
 
-// Set doc to collection
-const firstDocument = {
-  count: 0,
-  sensorType: 'temperature-humidity',
-}
-
-let initialDoc = await getDoc(firstDocRef)
-let initialDocData
-if (!initialDoc.exists()) {
-  console.log('First document or collection does not exist, creating one..')
-  await setDoc(firstDocRef, firstDocument)
-  console.log('Created first document successfully!')
-  initialDoc = await getDoc(firstDocRef)
-  initialDocData = initialDoc.data()
-} else {
-  initialDocData = initialDoc.data()
-  console.log(
-    `First document already exist!\nsensor data count: ${initialDocData.count}, type: ${initialDocData.sensorType}`
-  )
-  if (initialDocData.sensorType !== firstDocument.sensorType) {
-    throw new Error(
-      `Mismatch sensor type between database (${initialDocData.sensorType}) and current type (${firstDocument.sensorType})`
-    )
-  }
-}
-
 const SERVER_PORT = 1700
 
 const UDP_PACKET_PROTOCOL_VERSION_OFFSET = 0
@@ -83,9 +57,10 @@ const UDP_PACKET_JSON_OBJ_OFFSET = 12
 const ASCON_MAC_DATA_OFFSET = {
   PAYLOAD: 0,
   DEV_NUMB: 1,
-  FCNT: 2,
-  FPORT: 3,
-  MHDR: 4,
+  DEV_ADDR: 2,
+  FCNT: 3,
+  FPORT: 4,
+  MHDR: 5,
 }
 
 const UDP_PACKET_TYPE = {
@@ -99,6 +74,10 @@ const UDP_PKT_FWD_STATES = {
   UPSTREAM: 0x01,
   DOWNSTREAM: 0x02,
   UNKNOWN: 0x3,
+}
+
+const FPORT_APP = {
+  TEMP_HUMI_SENSOR: 0x01,
 }
 
 let udpPktFwdState = UDP_PKT_FWD_STATES.IDLE
@@ -181,33 +160,39 @@ const networkServerProcessData = async (state, buff) => {
     // rxpk may contain multiple RF package
     // so we loop through to check
     for (let i = 0; i < jsonObject.rxpk.length; i++) {
+      const startTimer = Date.now()
+      console.log('###### Decrypt package, start time in ms:', startTimer)
       const [data, packet] = await decryptLoraRawDataAsconMac(
         jsonObject.rxpk[i].data,
         process.env.NWKSKEY1,
         process.env.APPSKEY1
       )
-      if (data != null) {
-        console.log(`RF captured data inst ${i}:`)
-        let sensorDoc = {
-          dev_addr:
-            deviceAddresses[
-              data[ASCON_MAC_DATA_OFFSET.DEV_NUMB].readInt8() - 1
-            ],
-          temperature:
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][2]) +
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][3]) / 10.0,
-          humidity:
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][0]) +
-            parseFloat(data[ASCON_MAC_DATA_OFFSET.PAYLOAD][1]) / 10.0,
-          inst: initialDocData.count,
-        }
-        initialDocData.count++
-        await updateDoc(firstDocRef, initialDocData)
-        let docRef = await addDoc(collection(firebaseDb, coll), sensorDoc)
-        console.log('Document written with ID: ', docRef.id)
-      } else {
+      const endTimer = Date.now()
+      console.log('###### Finish, end time in ms:', endTimer)
+      console.log('Time elapsed in ms:', endTimer - startTimer)
+      if (data == null) {
         console.log(`Failed to decrypt package inst ${i}`)
+        continue
       }
+
+      console.log(`RF captured data inst ${i}:`)
+      console.log('DevAddress:', data[ASCON_MAC_DATA_OFFSET.DEV_ADDR])
+      console.log('FPort:', data[ASCON_MAC_DATA_OFFSET.FPORT])
+      console.log('MHDR:', data[ASCON_MAC_DATA_OFFSET.MHDR])
+      console.log('FCnt:', data[ASCON_MAC_DATA_OFFSET.FCNT])
+      const data_packet = []
+      const fport = data[ASCON_MAC_DATA_OFFSET.FPORT].readInt8()
+      data_packet.push(...data[ASCON_MAC_DATA_OFFSET.PAYLOAD])
+      const sensorDoc = {
+        time_ms: Date.now(),
+        fport: fport,
+        dev_addr:
+          deviceAddresses[data[ASCON_MAC_DATA_OFFSET.DEV_NUMB].readInt8() - 1],
+        data: data_packet,
+        data_size: data_packet.length,
+      }
+      const docRef = await addDoc(collection(firebaseDb, coll), sensorDoc)
+      console.log('Document written with ID: ', docRef.id)
     }
   } else if ((state = UDP_PKT_FWD_STATES.DOWNSTREAM)) {
     console.log('No support for downstream data processing yet')
