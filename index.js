@@ -7,6 +7,7 @@
 
 import 'dotenv/config'
 import dgram from 'dgram'
+import crypto from 'crypto'
 import { decryptLoraRawData, decryptLoraRawDataAsconMac } from './lorawan.js'
 
 // Import the functions you need from the SDKs you need
@@ -38,13 +39,6 @@ const firebaseConfig = {
 // Initialize Firebase
 const firebaseApp = initializeApp(firebaseConfig)
 const firebaseDb = getFirestore(firebaseApp)
-// Get date
-const date = new Date()
-const dateString = date.toDateString().replaceAll(' ', '')
-// Get document reference
-const firstId = 'collection-metadata'
-const coll = 'sensorDataCollection' + dateString
-const firstDocRef = doc(firebaseDb, coll, firstId)
 
 const SERVER_PORT = 1700
 
@@ -191,8 +185,15 @@ const networkServerProcessData = async (state, buff) => {
         data: data_packet,
         data_size: data_packet.length,
       }
-      const docRef = await addDoc(collection(firebaseDb, coll), sensorDoc)
-      console.log('Document written with ID: ', docRef.id)
+
+      // Write to firebase
+      const date = new Date()
+      const dateString = date.toDateString().replaceAll(' ', '')
+      const id = crypto.randomBytes(16).toString('hex')
+      const coll = 'sensorDataCollection' + dateString
+      const docRef = doc(firebaseDb, coll, id)
+      await setDoc(docRef, sensorDoc)
+      console.log('Document written with id:', id)
     }
   } else if ((state = UDP_PKT_FWD_STATES.DOWNSTREAM)) {
     console.log('No support for downstream data processing yet')
