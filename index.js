@@ -8,6 +8,11 @@
 import 'dotenv/config'
 import dgram from 'dgram'
 import crypto from 'crypto'
+import express from 'express'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import { dirname } from 'path'
+
 import { decryptLoraRawData, decryptLoraRawDataAsconMac } from './lorawan.js'
 
 // Import the functions you need from the SDKs you need
@@ -17,10 +22,15 @@ import {
   doc,
   collection,
   setDoc,
+  getDocs,
   getDoc,
   updateDoc,
   addDoc,
 } from 'firebase/firestore'
+import { getAuth, signInWithEmailAndPassword } from 'firebase/auth'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 // Device Address
 const deviceAddresses = [process.env.DEVADDR1]
@@ -38,7 +48,10 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const firebaseApp = initializeApp(firebaseConfig)
+const firebaseAuth = getAuth(firebaseApp)
 const firebaseDb = getFirestore(firebaseApp)
+
+const sensorDevColl = 'sensorDevCollection'
 
 const SERVER_PORT = 1700
 
@@ -75,6 +88,129 @@ const FPORT_APP = {
 }
 
 let udpPktFwdState = UDP_PKT_FWD_STATES.IDLE
+
+// Admin global variable
+let ADMIN_LOGGED_IN = false
+
+// Initialize express (for admin page)
+const app = express()
+const appPort = 3030
+
+// Content Header application/json
+app.use(express.json())
+// HTML form
+app.use(express.urlencoded({ extended: true }))
+
+app.get('/admin/login', (req, res) => {
+  ADMIN_LOGGED_IN = false
+  res.sendFile(path.join(__dirname, 'static', 'admin-login.html'))
+})
+
+app.post('/admin/dashboard', async (req, res) => {
+  const { email, pwd } = req.body
+  try {
+    // Authenticate with Firebase
+    if (!ADMIN_LOGGED_IN) {
+      await signInWithEmailAndPassword(firebaseAuth, email, pwd)
+    }
+    ADMIN_LOGGED_IN = true
+    res.sendFile(path.join(__dirname, 'static', 'admin-dashboard.html'))
+  } catch (error) {
+    console.error('[ERROR] Admin auth error:', error.message)
+    res.status(401).send('Login failed, check email or password')
+  }
+})
+
+// Helper function to generate a random hex string
+const generateRandomHex = (length) => {
+  const characters = '0123456789ABCDEF'
+  let result = ''
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length))
+  }
+  return result
+}
+
+app.post('/admin/create-new-device', async (req, res) => {
+  try {
+    if (!ADMIN_LOGGED_IN) {
+      throw new Error('User has not logged in')
+    }
+
+    // Generate random hex values
+    const appskey = generateRandomHex(32)
+    const devaddr = generateRandomHex(8)
+    const nwkskey = generateRandomHex(32)
+    const created = Date.now()
+
+    // Create document data
+    const deviceData = {
+      appskey,
+      created,
+      devaddr,
+      nwkskey,
+    }
+
+    // Add document to sensorDevCollection using setDoc
+    await setDoc(doc(firebaseDb, sensorDevColl, devaddr), deviceData)
+
+    // Respond with the stringified deviceData
+    res.status(200).send(`<!DOCTYPE html>
+                          <html>
+                            <body>
+                            <h1>New device created</h1>
+                            ${JSON.stringify(deviceData)}
+                            </br>
+                            </br>
+                              <form action="/admin/dashboard" method="post">
+                                <input type="submit" value="Return to dashboard" />
+                              </form>
+                            </body>
+                          </html>`)
+  } catch (error) {
+    console.error('[ERROR] Admin create new device:', error.message)
+    res.status(401).send('Unauthorized access')
+  }
+})
+
+app.get('/admin/list-devices', async (req, res) => {
+  try {
+    if (!ADMIN_LOGGED_IN) {
+      throw new Error('User has not logged in')
+    }
+
+    // Reference to the sensorDevCollection
+    const devicesRef = collection(firebaseDb, sensorDevColl)
+    const querySnapshot = await getDocs(devicesRef)
+
+    // Build HTML string
+    let string = '<!DOCTYPE html> <html> <body> <h1> Device list </h1> <ul>'
+    querySnapshot.forEach((doc) => {
+      const data = doc.data()
+      string += `
+        <ul>
+          <li><b>${doc.id}</b></li>
+          <li>appskey: ${data.appskey}</li>
+          <li>created: ${data.created}</li>
+          <li>devaddr: ${data.devaddr}</li>
+          <li>nwkskey: ${data.nwkskey}</li>
+        </ul>
+        </br>
+      `
+    })
+    string +=
+      '</ul> <form action="/admin/dashboard" method="post"> <input type="submit" value="Return to dashboard" /> </form> </body></html>'
+    res.status(200).send(string)
+  } catch (error) {
+    console.error('[ERROR] Admin list-devices:', error.message)
+    res.status(401).send('Unauthorized access')
+  }
+})
+
+// Start express server
+app.listen(appPort, () => {
+  console.log(`Example app listening on port ${appPort}`)
+})
 
 const server = dgram.createSocket('udp4')
 
