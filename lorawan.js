@@ -4,7 +4,8 @@ import fs from 'fs'
 
 const hexStringToByteArray = (string) => {
   if (string.length % 2 !== 0) {
-    throw new Error('Invalid string input length')
+    console.error('Invalid string input length:', string.length, string)
+    return
   }
   const byteArray = []
   for (let i = 0; i < string.length; i += 2) {
@@ -58,15 +59,16 @@ export const decryptLoraRawDataAsconMac = async (
       console.log('OS IS NOT Window, use the default one')
       command = './asconmacav12/out'
     }
-    command += ` "${data}"`
+    command += ` "${data}" "${appkeyHexString}" "${nwkskeyHexString}"`
     const info = []
     exec(command, (error, stdout) => {
       if (error) {
-        console.error(`Error: ${error.message}`)
+        console.error(`Error: ${error.message}`, stdout.trim())
         resolve([null, null])
       }
       const lines = stdout.trim().split('\n')
       for (let i = 0; i < lines.length; i++) {
+        lines[i] = lines[i].replace(/[\n\r]+/g, '')
         info.push(hexStringToByteArray(lines[i]))
       }
       resolve([info, info[0]])
