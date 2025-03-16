@@ -373,6 +373,46 @@ const networkServerProcessData = async (state, buff) => {
         const docRef = doc(firebaseDb, coll, id)
         await setDoc(docRef, sensorDoc)
         console.log('Document written with id and col:', id, coll)
+        // Update device metadata
+        const sensorDevMetadataDoc = {
+          package_count: 1,
+        }
+        const sensorDevMetaColl = 'sensorMetadataCollection' + dateString
+        const devicesMetadataQuerySnapshot = await getDocs(
+          collection(firebaseDb, sensorDevMetaColl)
+        )
+        let pkt_count = 0
+        devicesMetadataQuerySnapshot.forEach((doc) => {
+          const data = doc.data()
+          if (doc.id === loraNodeAddress) {
+            pkt_count = data.package_count
+            console.log('Found matching device metadata')
+          }
+        })
+        // No device
+        if (pkt_count <= 0) {
+          const sensorDevMetadataRef = doc(
+            firebaseDb,
+            sensorDevMetaColl,
+            loraNodeAddress
+          )
+          await setDoc(sensorDevMetadataRef, sensorDevMetadataDoc)
+          console.log(
+            'Create new device metadata with id and col:',
+            loraNodeAddress,
+            sensorDevMetaColl
+          )
+        } else {
+          // Found a device
+          await updateDoc(doc(firebaseDb, sensorDevMetaColl, loraNodeAddress), {
+            package_count: pkt_count + 1,
+          })
+          console.log(
+            'Updated device metadata for doc id and col:',
+            loraNodeAddress,
+            sensorDevMetaColl
+          )
+        }
       }
     } else if ((state = UDP_PKT_FWD_STATES.DOWNSTREAM)) {
       console.log('No support for downstream data processing yet')
