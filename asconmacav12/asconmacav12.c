@@ -7,7 +7,6 @@
 #include "api.h"
 #include "crypto_auth.h"
 #include "base64.h"
-#include "secrets.h"
 #include "loramac.h"
 
 #define BASE64_INPUT_DATA argv[1]
@@ -15,12 +14,15 @@
 #define LE_BYTES_TO_UINT32(x) ((*(x + 3)) << 24) | ((*(x + 2)) << 16) | ((*(x + 1)) << 8) | ((*(x)))
 #define LE_BYTES_TO_UINT16(x) ((*(x + 1)) << 8) | ((*(x)))
 #define LE_UINT32(x) (((x >> 24) & 0xFF) | ((x >> 8) & 0xFF00) | ((x << 8) & 0xFF0000) | ((x << 24) & 0xFF000000))
-static unsigned char nwskey1[CRYPTO_KEYBYTES] = {NWKSKEY1};
-static unsigned char appskey1[CRYPTO_KEYBYTES] = {APPSKEY1};
+
+#define DEVICES_ADDRBYTES 4
+
+static unsigned char nwskey1[CRYPTO_KEYBYTES] = { 0 };
+static unsigned char appskey1[CRYPTO_KEYBYTES] = { 0 };
 
 static unsigned char tag[CRYPTO_BYTES] = { 0 };
 
-static uint32_t devices[] = {DEV_ADDR1};
+static uint32_t devices[DEVICES_ADDRBYTES] = { 0 };
 
 void reverse_bytes(uint8_t *bytes, size_t size);
 
