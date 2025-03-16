@@ -32,8 +32,8 @@ import { getAuth, signInWithEmailAndPassword } from 'firebase/auth'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-// Device Address
-const deviceAddresses = [process.env.DEVADDR1]
+// Device info, get defined devices
+const devicesInfo = new Map()
 
 // Firebase configuration
 const firebaseConfig = {
@@ -88,6 +88,20 @@ const FPORT_APP = {
 }
 
 let udpPktFwdState = UDP_PKT_FWD_STATES.IDLE
+
+// Setup local devices Map
+try {
+  const devicesInfoQuerySnapshot = await getDocs(
+    collection(firebaseDb, sensorDevColl)
+  )
+  devicesInfoQuerySnapshot.forEach((doc) => {
+    const data = doc.data()
+    devicesInfo.set(doc.id, [data.appskey, data.nwkskey, 0]) // Data = [appskey, nwkskey, downlink_count]
+  })
+  console.log('Available devices on startup', devicesInfo)
+} catch (error) {
+  console.error('[ERROR] Failed to get devices:', error.message)
+}
 
 // Admin global variable
 let ADMIN_LOGGED_IN = false
@@ -150,6 +164,9 @@ app.post('/admin/create-new-device', async (req, res) => {
       devaddr,
       nwkskey,
     }
+
+    // Add devices to local Map
+    devicesInfo.set(devaddr, [appskey, nwkskey, 0]) // Data = [appskey, nwkskey, downlink_count]
 
     // Add document to sensorDevCollection using setDoc
     await setDoc(doc(firebaseDb, sensorDevColl, devaddr), deviceData)
@@ -281,60 +298,88 @@ server.on('message', (msg, rinfo) => {
 // @param buff The msg Buffer type
 const networkServerProcessData = async (state, buff) => {
   console.log('Process LoRa package..')
-  if (state == UDP_PKT_FWD_STATES.UPSTREAM) {
-    const jsonObject = pushDataBuffToJsonObject(buff)
-    console.log(jsonObject)
-    if (!jsonObject.rxpk) {
-      return
-    }
-    // rxpk may contain multiple RF package
-    // so we loop through to check
-    for (let i = 0; i < jsonObject.rxpk.length; i++) {
-      const startTimer = Date.now()
-      console.log('###### Decrypt package, start time in ms:', startTimer)
-      const [data, packet] = await decryptLoraRawDataAsconMac(
-        jsonObject.rxpk[i].data,
-        process.env.NWKSKEY1,
-        process.env.APPSKEY1
-      )
-      const endTimer = Date.now()
-      console.log('###### Finish, end time in ms:', endTimer)
-      console.log('Time elapsed in ms:', endTimer - startTimer)
-      if (data == null) {
-        console.log(`Failed to decrypt package inst ${i}`)
-        continue
+  try {
+    if (state == UDP_PKT_FWD_STATES.UPSTREAM) {
+      const jsonObject = pushDataBuffToJsonObject(buff)
+      console.log(jsonObject)
+      if (!jsonObject.rxpk) {
+        return
       }
+      // rxpk may contain multiple RF package
+      // so we loop through to check
+      for (let i = 0; i < jsonObject.rxpk.length; i++) {
+        const startTimer = Date.now()
+        console.log('###### Decrypt package, start time in ms:', startTimer)
+        // Create a buffer from the string
+        const loraPktBase64 = jsonObject.rxpk[i].data
+        const loraPktBuf = Buffer.from(loraPktBase64, 'base64')
+        // Turn to hex string
+        const loraPktHex = loraPktBuf.toString('hex')
+        // Get LoRa node address
+        let loraNodeAddressLittleEndian = loraPktHex.slice(2, 10).toUpperCase()
+        if (loraNodeAddressLittleEndian.length % 2 !== 0) {
+          throw new Error('Hex string must have an even length')
+        }
+        // Split the hex string into an array of 2-character chunks (bytes)
+        const bytes = []
+        for (let i = 0; i < loraNodeAddressLittleEndian.length; i += 2) {
+          bytes.push(loraNodeAddressLittleEndian.slice(i, i + 2))
+        }
+        // Reverse the bytes to convert from little-endian to big-endian
+        const loraNodeAddress = bytes.reverse().join('')
+        if (!devicesInfo.has(loraNodeAddress)) {
+          throw new Error(`Unknown device address ${loraNodeAddress}`)
+        }
+        const [appskey, nwkskey, downLinkCounter] =
+          devicesInfo.get(loraNodeAddress)
+        const [data, packet] = await decryptLoraRawDataAsconMac(
+          jsonObject.rxpk[i].data,
+          nwkskey,
+          appskey
+        )
+        const endTimer = Date.now()
+        console.log('###### Finish, end time in ms:', endTimer)
+        console.log('Time elapsed in ms:', endTimer - startTimer)
+        if (data == null) {
+          console.log(`Failed to decrypt package inst ${i}`)
+          continue
+        }
 
-      console.log(`RF captured data inst ${i}:`)
-      console.log('DevAddress:', data[ASCON_MAC_DATA_OFFSET.DEV_ADDR])
-      console.log('FPort:', data[ASCON_MAC_DATA_OFFSET.FPORT])
-      console.log('MHDR:', data[ASCON_MAC_DATA_OFFSET.MHDR])
-      console.log('FCnt:', data[ASCON_MAC_DATA_OFFSET.FCNT])
-      const data_packet = []
-      const fport = data[ASCON_MAC_DATA_OFFSET.FPORT].readInt8()
-      data_packet.push(...data[ASCON_MAC_DATA_OFFSET.PAYLOAD])
-      const sensorDoc = {
-        time_ms: Date.now(),
-        fport: fport,
-        dev_addr:
-          deviceAddresses[data[ASCON_MAC_DATA_OFFSET.DEV_NUMB].readInt8() - 1],
-        data: data_packet,
-        data_size: data_packet.length,
+        console.log(`RF captured data inst ${i}:`)
+        console.log('DevAddress:', data[ASCON_MAC_DATA_OFFSET.DEV_ADDR])
+        console.log('FPort:', data[ASCON_MAC_DATA_OFFSET.FPORT])
+        console.log('MHDR:', data[ASCON_MAC_DATA_OFFSET.MHDR])
+        console.log('FCnt:', data[ASCON_MAC_DATA_OFFSET.FCNT])
+        const data_packet = []
+        const fport = data[ASCON_MAC_DATA_OFFSET.FPORT].readInt8()
+        data_packet.push(...data[ASCON_MAC_DATA_OFFSET.PAYLOAD])
+        const sensorDoc = {
+          time_ms: Date.now(),
+          fport: fport,
+          dev_addr:
+            deviceAddresses[
+              data[ASCON_MAC_DATA_OFFSET.DEV_NUMB].readInt8() - 1
+            ],
+          data: data_packet,
+          data_size: data_packet.length,
+        }
+
+        // Write to firebase
+        const date = new Date()
+        const dateString = date.toDateString().replaceAll(' ', '')
+        const id = crypto.randomBytes(16).toString('hex')
+        const coll = 'sensorDataCollection' + dateString
+        const docRef = doc(firebaseDb, coll, id)
+        await setDoc(docRef, sensorDoc)
+        console.log('Document written with id:', id)
       }
-
-      // Write to firebase
-      const date = new Date()
-      const dateString = date.toDateString().replaceAll(' ', '')
-      const id = crypto.randomBytes(16).toString('hex')
-      const coll = 'sensorDataCollection' + dateString
-      const docRef = doc(firebaseDb, coll, id)
-      await setDoc(docRef, sensorDoc)
-      console.log('Document written with id:', id)
+    } else if ((state = UDP_PKT_FWD_STATES.DOWNSTREAM)) {
+      console.log('No support for downstream data processing yet')
+    } else {
+      console.log('Unknown packet forwarder state for data processing')
     }
-  } else if ((state = UDP_PKT_FWD_STATES.DOWNSTREAM)) {
-    console.log('No support for downstream data processing yet')
-  } else {
-    console.log('Unknown packet forwarder state for data processing')
+  } catch (error) {
+    console.error('[ERROR] Process data:', error.message)
   }
 }
 
