@@ -63,7 +63,7 @@ const UDP_PACKET_JSON_OBJ_OFFSET = 12
 
 const ASCON_MAC_DATA_OFFSET = {
   PAYLOAD: 0,
-  DEV_NUMB: 1,
+  TIME_ELAPSED: 1,
   DEV_ADDR: 2,
   FCNT: 3,
   FPORT: 4,
@@ -346,6 +346,10 @@ const networkServerProcessData = async (state, buff) => {
         }
 
         console.log(`RF captured data inst ${i}:`)
+        console.log(
+          'Actual time elapsed in microsec:',
+          data[ASCON_MAC_DATA_OFFSET.TIME_ELAPSED].readUInt32BE(0)
+        )
         console.log('DevAddress:', data[ASCON_MAC_DATA_OFFSET.DEV_ADDR])
         console.log('FPort:', data[ASCON_MAC_DATA_OFFSET.FPORT])
         console.log('MHDR:', data[ASCON_MAC_DATA_OFFSET.MHDR])
@@ -356,10 +360,7 @@ const networkServerProcessData = async (state, buff) => {
         const sensorDoc = {
           time_ms: Date.now(),
           fport: fport,
-          dev_addr:
-            deviceAddresses[
-              data[ASCON_MAC_DATA_OFFSET.DEV_NUMB].readInt8() - 1
-            ],
+          dev_addr: loraNodeAddress,
           data: data_packet,
           data_size: data_packet.length,
         }
@@ -368,10 +369,10 @@ const networkServerProcessData = async (state, buff) => {
         const date = new Date()
         const dateString = date.toDateString().replaceAll(' ', '')
         const id = crypto.randomBytes(16).toString('hex')
-        const coll = 'sensorDataCollection' + dateString
+        const coll = 'sensorDataCollection' + fport + dateString
         const docRef = doc(firebaseDb, coll, id)
         await setDoc(docRef, sensorDoc)
-        console.log('Document written with id:', id)
+        console.log('Document written with id and col:', id, coll)
       }
     } else if ((state = UDP_PKT_FWD_STATES.DOWNSTREAM)) {
       console.log('No support for downstream data processing yet')
