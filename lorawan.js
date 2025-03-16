@@ -1,5 +1,6 @@
 import lora from 'lora-packet'
 import { exec } from 'child_process'
+import fs from 'fs'
 
 const hexStringToByteArray = (string) => {
   if (string.length % 2 !== 0) {
@@ -42,7 +43,22 @@ export const decryptLoraRawDataAsconMac = async (
 ) => {
   return new Promise((resolve, reject) => {
     // Pass Base64 package to C program
-    const command = `./asconmacav12/out "${data}"`
+    let command
+    if (process.platform === 'win32') {
+      console.log('OS is Window')
+      if (fs.existsSync('.\\asconmacav12\\out.exe')) {
+        console.log('Found .exe, use it')
+        command = '.\\asconmacav12\\out.exe'
+      } else {
+        console.log('Cannot find .exe, use the default one')
+        command = '.\\asconmacav12\\out'
+      }
+    } else {
+      /* Assuming this is Linux */
+      console.log('OS IS NOT Window, use the default one')
+      command = './asconmacav12/out'
+    }
+    command += ` "${data}"`
     const info = []
     exec(command, (error, stdout) => {
       if (error) {
