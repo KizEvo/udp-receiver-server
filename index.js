@@ -13,7 +13,11 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 
-import { decryptLoraRawData, decryptLoraRawDataAsconMac } from './lorawan.js'
+import {
+  decryptLoraRawData,
+  decryptLoraRawDataAsconMac,
+  encryptLoraDataAsconMac,
+} from './lorawan.js'
 
 // Import the functions you need from the SDKs you need
 import { initializeApp } from 'firebase/app'
@@ -88,6 +92,9 @@ const FPORT_APP = {
 }
 
 let udpPktFwdState = UDP_PKT_FWD_STATES.IDLE
+let PULL_DATA_RECEIVED = false
+let GW_PORT
+let GW_ADDR
 
 // Setup local devices Map
 try {
@@ -224,6 +231,55 @@ app.get('/admin/list-devices', async (req, res) => {
   }
 })
 
+// Downlink
+app.post('/client/downlink', async (req, res) => {
+  try {
+    console.log('Downstream initialized by application server')
+    if (!PULL_DATA_RECEIVED) {
+      throw new Error("Data exchange hasn't been initialized by gateway")
+    }
+    // Encrypt data
+    const { devaddr, data } = req.body
+    if (!devicesInfo.has(devaddr)) {
+      throw new Error('Undefined device address')
+    }
+    const [appskey, nwkskey, downLinkCounter] = devicesInfo.get(devaddr)
+    const dataString = await encryptLoraDataAsconMac(
+      data,
+      nwkskey,
+      appskey,
+      devaddr,
+      downLinkCounter,
+      200
+    )
+    const dataBuffer = Buffer.from(dataString, 'hex')
+    const dataBase64 = dataBuffer.toString('base64')
+    // Generate random token
+    const randomToken = Buffer.from([
+      Math.floor(Math.random() * 15),
+      Math.floor(Math.random() * 15),
+    ])
+    const rfSize = data.length + 13 // 13 LoRaWAN protocol package
+    // Generate JSON string and receive data from req.body
+    const json = `{"txpk":{"imme":true,"freq":921.4,"rfch":0,"powe":14,"modu":"LORA","datr":"SF7BW125","codr":"4/8","ipol":false,"prea":8,"size":${rfSize},"data":"${dataBase64}"}}`
+    const prefix = Buffer.from([0x02, ...randomToken, 0x03])
+    const jsonBuffer = Buffer.from(json, 'utf8')
+    const msg = Buffer.concat([prefix, jsonBuffer])
+    // Update F_CNT for downlink
+    devicesInfo.set(devaddr, [appskey, nwkskey, downLinkCounter + 1])
+    // Send data to gateway
+    server.send(msg, GW_PORT, GW_ADDR)
+    console.log('Downlink device', devaddr)
+    console.log('Downlink random token:', randomToken)
+    console.log('Downlink f_cnt:', downLinkCounter + 1)
+    console.log('Downlink data', JSON.parse(json))
+    res.status(200).send('\nDownstream initialized success\n')
+  } catch (error) {
+    console.error('[ERROR] Downlink:', error.message)
+    res.status(401).send('\nFailed to init downstream\n')
+  }
+})
+
 // Start express server
 app.listen(appPort, () => {
   console.log(`Example app listening on port ${appPort}`)
@@ -253,6 +309,9 @@ server.on('message', (msg, rinfo) => {
       udpPktFwdState = UDP_PKT_FWD_STATES.UPSTREAM
     } else if (msg[UDP_PACKET_TYPE_OFFSET] == UDP_PACKET_TYPE.PULL_DATA) {
       udpPktFwdState = UDP_PKT_FWD_STATES.DOWNSTREAM
+      PULL_DATA_RECEIVED = true
+      GW_ADDR = rinfo.address
+      GW_PORT = rinfo.port
     } else {
       udpPktFwdState = UDP_PKT_FWD_STATES.UNKNOWN
     }

@@ -36,6 +36,44 @@ export const decryptLoraRawData = (data, nwkskeyHexString, appkeyHexString) => {
   return [null, null]
 }
 
+export const encryptLoraDataAsconMac = async (
+  data,
+  nwkskeyHexString,
+  appkeyHexString,
+  devAddress,
+  downlinkCount,
+  fport
+) => {
+  return new Promise((resolve, reject) => {
+    // Pass Base64 package to C program
+    let command
+    if (process.platform === 'win32') {
+      console.log('OS is Window')
+      if (fs.existsSync('.\\asconmacav12\\out.exe')) {
+        console.log('Found .exe, use it')
+        command = '.\\asconmacav12\\out.exe'
+      } else {
+        console.log('Cannot find .exe, use the default one')
+        command = '.\\asconmacav12\\out'
+      }
+    } else {
+      /* Assuming this is Linux */
+      console.log('OS IS NOT Window, use the default one')
+      command = './asconmacav12/out'
+    }
+    const inBase64 = Buffer.from(data).toString('base64')
+    command += ` "${inBase64}" "${appkeyHexString}" "${nwkskeyHexString}" "${devAddress}" "${downlinkCount}" "${fport}"`
+    exec(command, (error, stdout) => {
+      if (error) {
+        console.error(`Error: ${error.message}`, stdout.trim())
+        resolve(null)
+      }
+      const dataBase64 = stdout.trim()
+      resolve(dataBase64)
+    })
+  })
+}
+
 // @param msg raw string data received from gateway usually in Base64 format
 export const decryptLoraRawDataAsconMac = async (
   data,
