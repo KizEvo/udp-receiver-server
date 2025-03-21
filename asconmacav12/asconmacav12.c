@@ -11,9 +11,12 @@
 
 #include <time.h>
 
-#define BASE64_INPUT_DATA  argv[1]
-#define APPSKEY_INPUT_DATA argv[2]
-#define NWSKEY_INPUT_DATA  argv[3]
+#define BASE64_INPUT_DATA   argv[1]
+#define APPSKEY_INPUT_DATA  argv[2]
+#define NWSKEY_INPUT_DATA   argv[3]
+#define DEV_ADDR_INPUT_DATA argv[4]
+#define DOWN_CNT_INPUT_DATA argv[5]
+#define FPORT_INPUT_DATA    argv[6]
 /* x is pointer to unsigned char */
 #define LE_BYTES_TO_UINT32(x) ((*(x + 3)) << 24) | ((*(x + 2)) << 16) | ((*(x + 1)) << 8) | ((*(x)))
 #define LE_BYTES_TO_UINT16(x) ((*(x + 1)) << 8) | ((*(x)))
@@ -26,7 +29,7 @@ static unsigned char appskey1[CRYPTO_KEYBYTES] = { 0 };
 
 static unsigned char tag[CRYPTO_BYTES] = { 0 };
 
-static uint32_t devices[DEVICES_ADDRBYTES] = { 0 };
+static unsigned char devices[DEVICES_ADDRBYTES] = { 0 };
 
 void reverse_bytes(uint8_t *bytes, size_t size);
 
@@ -44,18 +47,7 @@ uint8_t hex_char_to_value(char c) {
 
 // Function to convert a hex string to a uint8_t array
 int hex_string_to_byte(const char *hexString, uint8_t *byteArray, size_t arraySize) {
-    // Check if the hex string is exactly 32 characters long (for 16 bytes)
     size_t hexLen = strlen(hexString);
-    if (hexLen != 32) {
-        printf("Hex string must be exactly 32 characters long, got %zu\n", hexLen);
-        return -1;
-    }
-
-    // Check if the array size is 16
-    if (arraySize != 16) {
-        printf("Array size must be 16, got %zu\n", arraySize);
-        return -1;
-    }
 
     // Convert each pair of hex characters to a byte
     for (size_t i = 0; i < hexLen; i += 2) {
@@ -68,6 +60,63 @@ int hex_string_to_byte(const char *hexString, uint8_t *byteArray, size_t arraySi
 }
 
 static int32_t lora_asconmac_encrypt(char *argv[])
+{
+    // Convert hex string to byte array
+    if (hex_string_to_byte(APPSKEY_INPUT_DATA, appskey1, 16) != 0) {
+        printf("\nCan not convert to byte array for appskey");
+        return -1; // Exit on error
+    }
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(NWSKEY_INPUT_DATA, nwskey1, 16) != 0) {
+        printf("\nCan not convert to byte array for nwskey");
+        return -1; // Exit on error
+    }
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(DEV_ADDR_INPUT_DATA, devices, 4) != 0) {
+        printf("\nCan not convert to byte array for device address");
+        return -1; // Exit on error
+    }
+
+    size_t data_out_size = 0;
+    size_t data_in_size = strlen((const char *)BASE64_INPUT_DATA);
+    if (!data_in_size) {
+        /* cannot convert to a number */
+        printf("\nCan not get size of data input");
+        return -2;
+    }
+    /* Base64 decoded package - [MHDR + FHDR + FPORT + FRMPayload + MIC] */
+    unsigned char *decoded = base64_decode(BASE64_INPUT_DATA, data_in_size, &data_out_size);
+    /* Use the LoRaMAC API to calculate the MIC and compare with decoded MIC */
+    struct loramac_phys_payload *loramac_payload = loramac_init();
+
+    uint8_t f_port = (uint8_t)atoi(FPORT_INPUT_DATA);
+	loramac_fill_mac_payload(loramac_payload, f_port, NULL);
+
+	loramac_fill_phys_payload(loramac_payload, LORAMAC_PHYS_PAYLOAD_MHDR_UNCONFIRM_DATA_DOWN, 0);
+
+    uint32_t dev_addr = (devices[0] << 24) | (devices[1] << 16) | (devices[2] << 8) | devices[3];
+    uint32_t loramac_f_cnt = (uint32_t)atoi(DOWN_CNT_INPUT_DATA);
+    loramac_fill_fhdr(loramac_payload, dev_addr, 0, loramac_f_cnt, NULL);
+
+    loramac_fill_mac_payload(loramac_payload, f_port, decoded);
+
+    uint32_t loramac_mic = 0;
+    loramac_frm_payload_encryption(loramac_payload, data_out_size, appskey1);
+    loramac_calculate_mic(loramac_payload, data_out_size, nwskey1, 1, &loramac_mic); // FRM_PAYLOAD + 1 MHDR + 7 FHDR + 1 FPORT
+    loramac_fill_phys_payload(loramac_payload, LORAMAC_PHYS_PAYLOAD_MHDR_UNCONFIRM_DATA_DOWN, loramac_mic);
+
+    uint8_t lora_package[data_out_size + 13]; // FRM_PAYLOAD + 13 LoRaWAN protocol excepts FOpts
+    loramac_serialize_data(loramac_payload, lora_package, data_out_size);
+    for (uint8_t i = 0; i < data_out_size + 13; i++) {
+        printf("%.2x", lora_package[i]);
+    }
+    printf("\n");
+    return 0;
+}
+
+static int32_t lora_asconmac_decrypt(char *argv[])
 {
     clock_t start, end;
     start = clock();
@@ -160,6 +209,8 @@ static int32_t lora_asconmac_encrypt(char *argv[])
 int main(int argc, char *argv[])
 {
     if (argc == 4) {
+        return lora_asconmac_decrypt(argv);
+    } else if (argc == 7) {
         return lora_asconmac_encrypt(argv);
     }
     /* invalid input parameter size */
