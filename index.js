@@ -12,6 +12,7 @@ import express from 'express'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
+import { spawn } from 'child_process'
 
 import {
   decryptLoraRawData,
@@ -231,6 +232,91 @@ app.get('/admin/list-devices', async (req, res) => {
   }
 })
 
+let mostRecentDevice = []
+
+app.get('/admin/reliability-test-start', async (req, res) => {
+  let isError = false
+  try {
+    if (!ADMIN_LOGGED_IN) {
+      throw new Error('User has not logged in')
+    }
+    const date = new Date()
+    const dateString = date.toDateString().replaceAll(' ', '')
+    const sensorDevMetaColl = 'sensorMetadataCollection' + dateString
+
+    const devicesMetadataQuerySnapshot = await getDocs(
+      collection(firebaseDb, sensorDevMetaColl)
+    )
+    console.log('Run reliability test, finding most recent device...')
+    let mostRecentDeviceTimestamp = 0
+    devicesMetadataQuerySnapshot.forEach((doc) => {
+      const data = doc.data()
+      if (mostRecentDeviceTimestamp < data.time_ms) {
+        mostRecentDeviceTimestamp = data.time_ms
+        mostRecentDevice = [doc.id, data, [], []]
+      }
+    })
+    if (mostRecentDevice.length > 0) {
+      console.log('Found:', mostRecentDevice[0])
+    } else {
+      throw new Error('Cannot found a running device')
+    }
+  } catch (error) {
+    console.error('[ERROR] Reliability start:', error.message)
+    isError = true
+  }
+  res.status(200).send(`<!DOCTYPE html>
+                          <html>
+                            <body>
+                            <h1>${isError ? 'Failed' : 'Starting'}</h1>
+                            </br>
+                            </br>
+                              <form action="/admin/dashboard" method="post">
+                                <input type="submit" value="Return to dashboard" />
+                              </form>
+                            </body>
+                          </html>`)
+})
+
+app.get('/admin/reliability-test-end', async (req, res) => {
+  let isError = false
+  try {
+    if (!ADMIN_LOGGED_IN) {
+      throw new Error('User has not logged in')
+    }
+    console.log('End reliability test, find device under test...')
+    if (mostRecentDevice.length >= 1) {
+      console.log('Total package sent:', mostRecentDevice[3].length)
+      console.log('Total failed package:', mostRecentDevice[2].length)
+    } else {
+      throw new Error('Cannot found device under test')
+    }
+    // Start python plot
+    const py = spawn('python', ['reltest.py'])
+    py.stdin.write(JSON.stringify([mostRecentDevice[3], mostRecentDevice[2]]))
+    py.stdout.on('data', (data) => {
+      console.log(data.toString())
+    })
+    py.stdin.end()
+  } catch (error) {
+    console.error('[ERROR] Reliability end :', error.message)
+    isError = true
+  }
+  mostRecentDevice = []
+  // Return result
+  res.status(200).send(`<!DOCTYPE html>
+                          <html>
+                            <body>
+                            <h1>${isError ? 'Failed' : 'Ending'}</h1>
+                            </br>
+                            </br>
+                              <form action="/admin/dashboard" method="post">
+                                <input type="submit" value="Return to dashboard" />
+                              </form>
+                            </body>
+                          </html>`)
+})
+
 // Downlink
 app.post('/client/downlink', async (req, res) => {
   try {
@@ -381,8 +467,8 @@ const networkServerProcessData = async (state, buff) => {
         }
         // Split the hex string into an array of 2-character chunks (bytes)
         const bytes = []
-        for (let i = 0; i < loraNodeAddressLittleEndian.length; i += 2) {
-          bytes.push(loraNodeAddressLittleEndian.slice(i, i + 2))
+        for (let j = 0; j < loraNodeAddressLittleEndian.length; j += 2) {
+          bytes.push(loraNodeAddressLittleEndian.slice(j, j + 2))
         }
         // Reverse the bytes to convert from little-endian to big-endian
         const loraNodeAddress = bytes.reverse().join('')
@@ -399,8 +485,16 @@ const networkServerProcessData = async (state, buff) => {
         const endTimer = Date.now()
         console.log('###### Finish, end time in ms:', endTimer)
         console.log('Time elapsed in ms:', endTimer - startTimer)
+        const date = new Date()
+        const dateString = date.toDateString().replaceAll(' ', '')
+        const sensorDevMetaColl = 'sensorMetadataCollection' + dateString
         if (data == null) {
           console.log(`Failed to decrypt package inst ${i}`)
+          // If test enabled, save failed package count
+          if (mostRecentDevice.length >= 1) {
+            mostRecentDevice[2].push(mostRecentDevice[3].length + 1)
+          }
+          // Check next package
           continue
         }
 
@@ -423,10 +517,28 @@ const networkServerProcessData = async (state, buff) => {
           data: data_packet,
           data_size: data_packet.length,
         }
-
+        // If test enabled, don't write to db
+        if (mostRecentDevice.length >= 1) {
+          if (data_packet.length < 5) {
+            throw new Error(
+              `[Test] Message size of ${data_packet.length} is invalid, the correct size is 5`
+            )
+          }
+          // The upper two bytes are zero, format to test
+          if (data_packet[3] + (data_packet[4] == 0)) {
+            // Write time_elapsed of encryption process on MCU to local storage
+            mostRecentDevice[3].push(
+              (data_packet[2] << 16) | (data_packet[1] << 8) | data_packet[0]
+            )
+          } else {
+            // Received invalid format, alert the user
+            console.log('[Test] Received incorrect test format', data_packet)
+          }
+          console.log('[Test] Store info to local storage success')
+          // Check next package
+          continue
+        }
         // Write to firebase
-        const date = new Date()
-        const dateString = date.toDateString().replaceAll(' ', '')
         const id = crypto.randomBytes(16).toString('hex')
         const coll = 'sensorDataCollection' + fport + dateString
         const docRef = doc(firebaseDb, coll, id)
@@ -435,8 +547,8 @@ const networkServerProcessData = async (state, buff) => {
         // Update device metadata
         const sensorDevMetadataDoc = {
           package_count: 1,
+          time_ms: sensorDoc.time_ms,
         }
-        const sensorDevMetaColl = 'sensorMetadataCollection' + dateString
         const devicesMetadataQuerySnapshot = await getDocs(
           collection(firebaseDb, sensorDevMetaColl)
         )
@@ -465,6 +577,7 @@ const networkServerProcessData = async (state, buff) => {
           // Found a device
           await updateDoc(doc(firebaseDb, sensorDevMetaColl, loraNodeAddress), {
             package_count: pkt_count + 1,
+            time_ms: sensorDoc.time_ms, // Update timestamp to check most recent active device
           })
           console.log(
             'Updated device metadata for doc id and col:',
