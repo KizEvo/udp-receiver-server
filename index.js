@@ -253,7 +253,7 @@ app.get('/admin/reliability-test-start', async (req, res) => {
       const data = doc.data()
       if (mostRecentDeviceTimestamp < data.time_ms) {
         mostRecentDeviceTimestamp = data.time_ms
-        mostRecentDevice = [doc.id, data, [], []]
+        mostRecentDevice = [doc.id, data, [], [], []]
       }
     })
     if (mostRecentDevice.length > 0) {
@@ -278,6 +278,36 @@ app.get('/admin/reliability-test-start', async (req, res) => {
                           </html>`)
 })
 
+const findMissingPackages = (arr) => {
+  // Check if array is empty or undefined
+  if (!arr || arr.length === 0) {
+    return []
+  }
+
+  let offset = arr[0]
+  for (let i = 0; i < arr.length; i++) {
+    arr[i] += 1 - offset
+  }
+
+  // Get the maximum number to know the full range
+  const maxNum = Math.max(...arr)
+
+  // Create a Set for O(1) lookup
+  const numSet = new Set(arr)
+
+  // Array to store missing numbers
+  const missing = []
+
+  // Check each number from 1 to maxNum
+  for (let i = 1; i <= maxNum; i++) {
+    if (!numSet.has(i)) {
+      missing.push(i)
+    }
+  }
+
+  return missing
+}
+
 app.get('/admin/reliability-test-end', async (req, res) => {
   let isError = false
   try {
@@ -285,15 +315,19 @@ app.get('/admin/reliability-test-end', async (req, res) => {
       throw new Error('User has not logged in')
     }
     console.log('End reliability test, find device under test...')
+    const missedPackage = findMissingPackages(mostRecentDevice[4])
     if (mostRecentDevice.length >= 1) {
       console.log('Total package sent:', mostRecentDevice[3].length)
       console.log('Total failed package:', mostRecentDevice[2].length)
+      console.log('Total missing package:', missedPackage.length)
     } else {
       throw new Error('Cannot found device under test')
     }
     // Start python plot
     const py = spawn('python', ['reltest.py'])
-    py.stdin.write(JSON.stringify([mostRecentDevice[3], mostRecentDevice[2]]))
+    py.stdin.write(
+      JSON.stringify([mostRecentDevice[3], mostRecentDevice[2], missedPackage])
+    )
     py.stdout.on('data', (data) => {
       console.log(data.toString())
     })
@@ -525,11 +559,13 @@ const networkServerProcessData = async (state, buff) => {
             )
           }
           // The upper two bytes are zero, format to test
-          if (data_packet[3] + (data_packet[4] == 0)) {
+          if (data_packet[4] == 0) {
             // Write time_elapsed of encryption process on MCU to local storage
             mostRecentDevice[3].push(
               (data_packet[2] << 16) | (data_packet[1] << 8) | data_packet[0]
             )
+            const fcntByte = data[ASCON_MAC_DATA_OFFSET.FCNT]
+            mostRecentDevice[4].push((fcntByte[0] << 8) | fcntByte[1])
           } else {
             // Received invalid format, alert the user
             console.log('[Test] Received incorrect test format', data_packet)
