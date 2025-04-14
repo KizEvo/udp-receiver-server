@@ -253,7 +253,7 @@ app.get('/admin/reliability-test-start', async (req, res) => {
       const data = doc.data()
       if (mostRecentDeviceTimestamp < data.time_ms) {
         mostRecentDeviceTimestamp = data.time_ms
-        mostRecentDevice = [doc.id, data, [], [], []]
+        mostRecentDevice = [doc.id, data, [], [], [], [], []]
       }
     })
     if (mostRecentDevice.length > 0) {
@@ -316,17 +316,37 @@ app.get('/admin/reliability-test-end', async (req, res) => {
     }
     console.log('End reliability test, find device under test...')
     const missedPackage = findMissingPackages(mostRecentDevice[4])
-    if (mostRecentDevice.length >= 1) {
+    if (
+      mostRecentDevice.length >= 1 &&
+      mostRecentDevice[0] === loraNodeAddress
+    ) {
+      console.log('====================== TEST SUMMARY ======================')
       console.log('Total package sent:', mostRecentDevice[3].length)
       console.log('Total failed package:', mostRecentDevice[2].length)
       console.log('Total missing package:', missedPackage.length)
+      console.log(
+        'Average LSNR:',
+        mostRecentDevice[5].reduce((a, b) => a + b, 0) /
+          mostRecentDevice[5].length
+      )
+      console.log(
+        'Average RSSI:',
+        mostRecentDevice[6].reduce((a, b) => a + b, 0) /
+          mostRecentDevice[6].length
+      )
     } else {
       throw new Error('Cannot found device under test')
     }
     // Start python plot
     const py = spawn('python', ['reltest.py'])
     py.stdin.write(
-      JSON.stringify([mostRecentDevice[3], mostRecentDevice[2], missedPackage])
+      JSON.stringify([
+        mostRecentDevice[3],
+        mostRecentDevice[2],
+        missedPackage,
+        mostRecentDevice[5],
+        mostRecentDevice[6],
+      ])
     )
     py.stdout.on('data', (data) => {
       console.log(data.toString())
@@ -525,7 +545,10 @@ const networkServerProcessData = async (state, buff) => {
         if (data == null) {
           console.log(`Failed to decrypt package inst ${i}`)
           // If test enabled, save failed package count
-          if (mostRecentDevice.length >= 1) {
+          if (
+            mostRecentDevice.length >= 1 &&
+            mostRecentDevice[0] === loraNodeAddress
+          ) {
             mostRecentDevice[2].push(mostRecentDevice[3].length + 1)
           }
           // Check next package
@@ -552,7 +575,10 @@ const networkServerProcessData = async (state, buff) => {
           data_size: data_packet.length,
         }
         // If test enabled, don't write to db
-        if (mostRecentDevice.length >= 1) {
+        if (
+          mostRecentDevice.length >= 1 &&
+          mostRecentDevice[0] === loraNodeAddress
+        ) {
           if (data_packet.length < 5) {
             throw new Error(
               `[Test] Message size of ${data_packet.length} is invalid, the correct size is 5`
@@ -566,11 +592,21 @@ const networkServerProcessData = async (state, buff) => {
             )
             const fcntByte = data[ASCON_MAC_DATA_OFFSET.FCNT]
             mostRecentDevice[4].push((fcntByte[0] << 8) | fcntByte[1])
+            mostRecentDevice[5].push(jsonObject.rxpk[i].lsnr)
+            mostRecentDevice[6].push(jsonObject.rxpk[i].rssi)
           } else {
             // Received invalid format, alert the user
-            console.log('[Test] Received incorrect test format', data_packet)
+            console.log(
+              '[Test] Received incorrect test format or different device address',
+              data_packet,
+              loraNodeAddress
+            )
           }
-          console.log('[Test] Store info to local storage success')
+          console.log(
+            '[Test] Store info to local storage success, encrypted data size tested:',
+            data_packet[3]
+          )
+          console.log('[Test] Package count:', mostRecentDevice[3].length)
           // Check next package
           continue
         }
