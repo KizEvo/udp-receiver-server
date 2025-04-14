@@ -42,12 +42,24 @@ def main():
     # get gateway missed package array
     package_gateway_missed = inputs[2]
 
+    # get package lsnr
+    package_lsnr = inputs[3]
+
+    # get package rssi
+    package_rssi = inputs[4]
+
     # create array for package time elapsed
     np_package_time_elapsed = np.array(package_time_elapsed)
     np_x_package = np.arange(1, np_package_time_elapsed.size + 1, 1)
 
     number_of_plot_row = 1
     number_of_plot_col = 1
+
+    # create array for package lsnr and rssi
+    np_package_lsnr = np.array(package_lsnr)
+    np_package_rssi = np.array(package_rssi)
+
+    number_of_plot_row = number_of_plot_row + 2
 
     # create array for package failure
     np_package_failure = np.array(package_failure)
@@ -78,6 +90,26 @@ def main():
         plt.ylabel("Time (us)")
         plt.subplots_adjust(left=0.2, hspace=0.5)
 
+    if number_of_plot_row >= 1:
+        idx = idx + 1
+        plt.subplot(number_of_plot_row, number_of_plot_col, idx)
+        plt.plot(np_x_package, np_package_lsnr)
+        plt.xticks(np_x_package)  # Show all x-ticks
+        plt.title("LSNR")
+        plt.xlabel("Package number")
+        plt.ylabel("SNR")
+        plt.subplots_adjust(left=0.2, hspace=0.5)
+
+    if number_of_plot_row >= 1:
+        idx = idx + 1
+        plt.subplot(number_of_plot_row, number_of_plot_col, idx)
+        plt.plot(np_x_package, np_package_rssi)
+        plt.xticks(np_x_package)  # Show all x-ticks
+        plt.title("RSSI")
+        plt.xlabel("Package number")
+        plt.ylabel("RSSI (dBm)")
+        plt.subplots_adjust(left=0.2, hspace=0.5)
+
     if np_package_failure.size > 0:
         idx = idx + 1
         plt.subplot(number_of_plot_row, number_of_plot_col, idx)
@@ -88,6 +120,7 @@ def main():
         plt.title("Network server decrypt package")
         plt.xlabel("Package number")
         plt.ylabel("Success rate")
+        plt.subplots_adjust(left=0.2, hspace=0.5)
 
     if np_package_gateway_missed.size > 0:
         idx = idx + 1
@@ -99,6 +132,7 @@ def main():
         plt.title("Network server failed to get package")
         plt.xlabel("Package number")
         plt.ylabel("Success rate")
+        plt.subplots_adjust(left=0.2, hspace=0.5)
 
         # show the result
     plt.show()
