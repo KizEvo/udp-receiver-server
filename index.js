@@ -316,10 +316,7 @@ app.get('/admin/reliability-test-end', async (req, res) => {
     }
     console.log('End reliability test, find device under test...')
     const missedPackage = findMissingPackages(mostRecentDevice[4])
-    if (
-      mostRecentDevice.length >= 1 &&
-      mostRecentDevice[0] === loraNodeAddress
-    ) {
+    if (mostRecentDevice.length >= 1) {
       console.log('====================== TEST SUMMARY ======================')
       console.log('Total package sent:', mostRecentDevice[3].length)
       console.log('Total failed package:', mostRecentDevice[2].length)
