@@ -104,7 +104,7 @@ static int32_t lora_asconmac_encrypt(char *argv[])
 
     uint32_t loramac_mic = 0;
     loramac_frm_payload_encryption(loramac_payload, data_out_size, appskey1);
-    loramac_calculate_mic(loramac_payload, data_out_size, nwskey1, 1, &loramac_mic); // FRM_PAYLOAD + 1 MHDR + 7 FHDR + 1 FPORT
+    loramac_calculate_mic(loramac_payload, data_out_size, nwskey1, 0, &loramac_mic); // FRM_PAYLOAD + 1 MHDR + 7 FHDR + 1 FPORT
     loramac_fill_phys_payload(loramac_payload, LORAMAC_PHYS_PAYLOAD_MHDR_UNCONFIRM_DATA_DOWN, loramac_mic);
 
     uint8_t lora_package[data_out_size + 13]; // FRM_PAYLOAD + 13 LoRaWAN protocol excepts FOpts
@@ -167,7 +167,7 @@ static int32_t lora_asconmac_decrypt(char *argv[])
     uint32_t mic = 0;
     uint32_t decoded_mic = 0;
     /* Compare MIC */
-    loramac_calculate_mic(payload, frm_payload_size, nwskey1, 1, &mic);
+    loramac_calculate_mic(payload, frm_payload_size, nwskey1, 0, &mic);
     decoded_mic = LE_BYTES_TO_UINT32(&decoded[LRMAC_BYTE_OFFSET_FRMPAYLOAD + frm_payload_size]);
     if (mic != decoded_mic) {
         printf("\nMIC does not match");

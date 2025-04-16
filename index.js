@@ -591,6 +591,10 @@ const networkServerProcessData = async (state, buff) => {
             mostRecentDevice[4].push((fcntByte[0] << 8) | fcntByte[1])
             mostRecentDevice[5].push(jsonObject.rxpk[i].lsnr)
             mostRecentDevice[6].push(jsonObject.rxpk[i].rssi)
+            console.log(
+              '[Test] Store info to local storage success, encrypted data size tested:',
+              data_packet[3]
+            )
           } else {
             // Received invalid format, alert the user
             console.log(
@@ -599,10 +603,6 @@ const networkServerProcessData = async (state, buff) => {
               loraNodeAddress
             )
           }
-          console.log(
-            '[Test] Store info to local storage success, encrypted data size tested:',
-            data_packet[3]
-          )
           console.log('[Test] Package count:', mostRecentDevice[3].length)
           // Check next package
           continue
