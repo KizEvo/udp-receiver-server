@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <h2>Device provision</h2>
+
+    <form action="/admin/create-new-device" method="post">
+      <label for="appkey">Enter AppKey</label><br />
+      <input
+        type="password"
+        id="appkey"
+        name="appkey"
+        placeholder="AppKey"
+      /><br />
+      <label for="deveui">Enter DevEUI</label><br />
+      <input type="text" id="deveui" name="deveui" placeholder="DevEui" /><br />
+      <label for="appeui">Enter AppEUI</label><br />
+      <input type="text" id="appeui" name="appeui" placeholder="AppEUI" /><br />
+      <br /><br />
+      <input type="submit" value="Submit" />
+    </form>
+  </body>
+</html>

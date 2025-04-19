@@ -113,3 +113,33 @@ export const decryptLoraRawDataAsconMac = async (
     })
   })
 }
+
+export const lorawanProcessJoinRequest = async (data, appkeyHexString) => {
+  return new Promise((resolve, reject) => {
+    // Pass Base64 package to C program
+    let command
+    if (process.platform === 'win32') {
+      console.log('OS is Window')
+      if (fs.existsSync('.\\asconmacav12\\out.exe')) {
+        console.log('Found .exe, use it')
+        command = '.\\asconmacav12\\out.exe'
+      } else {
+        console.log('Cannot find .exe, use the default one')
+        command = '.\\asconmacav12\\out'
+      }
+    } else {
+      /* Assuming this is Linux */
+      console.log('OS IS NOT Window, use the default one')
+      command = './asconmacav12/out'
+    }
+    command += ` "${data}" "${appkeyHexString}"`
+    const info = []
+    exec(command, (error, stdout) => {
+      if (error) {
+        console.error(`Error: ${error.message}`, stdout.trim())
+        resolve(0)
+      }
+      resolve(1)
+    })
+  })
+}

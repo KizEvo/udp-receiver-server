@@ -18,6 +18,7 @@ import {
   decryptLoraRawData,
   decryptLoraRawDataAsconMac,
   encryptLoraDataAsconMac,
+  lorawanProcessJoinRequest,
 } from './lorawan.js'
 
 // Import the functions you need from the SDKs you need
@@ -103,10 +104,21 @@ try {
     collection(firebaseDb, sensorDevColl)
   )
   devicesInfoQuerySnapshot.forEach((doc) => {
-    const data = doc.data()
-    devicesInfo.set(doc.id, [data.appskey, data.nwkskey, 0]) // Data = [appskey, nwkskey, downlink_count]
+    const docData = doc.data()
+    if (doc.id.length == 8) {
+      const info = {
+        appskey: docData.appskey,
+        nwkskey: docData.nwkskey,
+        downlink: 0,
+      }
+      devicesInfo.set(doc.id, { abp: info })
+    } else {
+      const { deviceData, deviceSessionData } = docData
+      devicesInfo.set(doc.id, { otaa: { deviceData, deviceSessionData } })
+    }
+    console.log('Device:', doc.id, devicesInfo.get(doc.id))
   })
-  console.log('Available devices on startup', devicesInfo)
+  console.log('Total available devices on startup', devicesInfo.size)
 } catch (error) {
   console.error('[ERROR] Failed to get devices:', error.message)
 }
@@ -143,6 +155,18 @@ app.post('/admin/dashboard', async (req, res) => {
   }
 })
 
+app.post('/admin/provision-device', async (req, res) => {
+  try {
+    if (!ADMIN_LOGGED_IN) {
+      throw new Error('User has not logged in')
+    }
+    res.sendFile(path.join(__dirname, 'static', 'admin-provision-device.html'))
+  } catch (error) {
+    console.error('[ERROR] Provision device:', error.message)
+    res.status(401).send('Provision device failed')
+  }
+})
+
 // Helper function to generate a random hex string
 const generateRandomHex = (length) => {
   const characters = '0123456789ABCDEF'
@@ -158,32 +182,51 @@ app.post('/admin/create-new-device', async (req, res) => {
     if (!ADMIN_LOGGED_IN) {
       throw new Error('User has not logged in')
     }
-
-    // Generate random hex values
-    const appskey = generateRandomHex(32)
-    const devaddr = generateRandomHex(8)
-    const nwkskey = generateRandomHex(32)
+    let { appkey, deveui, appeui } = req.body
+    deveui = deveui.toUpperCase()
+    appkey = appkey.toUpperCase()
+    appeui = appeui.toUpperCase()
+    // 'placeholder' only, do not use it before join-accept
+    const appskey = ''
+    const devaddr = ''
+    const nwkskey = ''
+    const downlink = 0
+    const uplink = 0
     const created = Date.now()
-
     // Create document data
-    const deviceData = {
+    const deviceSessionData = {
       appskey,
-      created,
       devaddr,
       nwkskey,
+      downlink,
+      uplink,
+      created: 0,
+      joinAccept: false,
+    }
+    const deviceData = {
+      appkey,
+      deveui,
+      appeui,
+      created,
     }
 
     // Add devices to local Map
-    devicesInfo.set(devaddr, [appskey, nwkskey, 0]) // Data = [appskey, nwkskey, downlink_count]
+    devicesInfo.set(deveui, { otaa: { deviceData, deviceSessionData } })
 
     // Add document to sensorDevCollection using setDoc
-    await setDoc(doc(firebaseDb, sensorDevColl, devaddr), deviceData)
+    await setDoc(doc(firebaseDb, sensorDevColl, deveui), {
+      deviceData,
+      deviceSessionData,
+    })
 
     // Respond with the stringified deviceData
     res.status(200).send(`<!DOCTYPE html>
                           <html>
                             <body>
                             <h1>New device created</h1>
+                            <h2>Device session keys</h2>
+                            ${JSON.stringify(deviceSessionData)}
+                            <h2>Device keys</h2>
                             ${JSON.stringify(deviceData)}
                             </br>
                             </br>
@@ -211,17 +254,41 @@ app.get('/admin/list-devices', async (req, res) => {
     // Build HTML string
     let string = '<!DOCTYPE html> <html> <body> <h1> Device list </h1> <ul>'
     querySnapshot.forEach((doc) => {
-      const data = doc.data()
-      string += `
+      const docData = doc.data()
+      if (doc.id.length == 8) {
+        string += `
         <ul>
-          <li><b>${doc.id}</b></li>
-          <li>appskey: ${data.appskey}</li>
-          <li>created: ${data.created}</li>
-          <li>devaddr: ${data.devaddr}</li>
-          <li>nwkskey: ${data.nwkskey}</li>
+          <li><b>ABP: ${doc.id}</b></li>
+          <li>appskey: ${docData.appskey}</li>
+          <li>devaddr: ${docData.devaddr}</li>
+          <li>nwkskey: ${docData.nwkskey}</li>
+          <li>created: ${docData.created}</li>
         </ul>
         </br>
       `
+      } else {
+        const { deviceData, deviceSessionData } = docData
+        string += `
+        <ul>
+          <li><b>OTAA: ${doc.id}</b></li>
+          <li>Device Info</li>
+          <li>appkey: ${deviceData.appkey}</li>
+          <li>appeui: ${deviceData.appeui}</li>
+          <li>deveui: ${deviceData.deveui}</li>
+          <li>created: ${deviceData.created}</li>
+          </br>
+          <li>Device Session Info</li>
+          <li>appskey: ${deviceSessionData.appskey}</li>
+          <li>nwkskey: ${deviceSessionData.nwkskey}</li>
+          <li>devaddr: ${deviceSessionData.devaddr}</li>
+          <li>downlink: ${deviceSessionData.downlink}</li>
+          <li>uplink: ${deviceSessionData.uplink}</li>
+          <li>joined: ${deviceSessionData.joinAccept}</li>
+          <li>created: ${deviceSessionData.created}</li>
+        </ul>
+        </br>
+      `
+      }
     })
     string +=
       '</ul> <form action="/admin/dashboard" method="post"> <input type="submit" value="Return to dashboard" /> </form> </body></html>'
@@ -380,13 +447,17 @@ app.post('/client/downlink', async (req, res) => {
     if (!devicesInfo.has(devaddr)) {
       throw new Error('Undefined device address')
     }
-    const [appskey, nwkskey, downLinkCounter] = devicesInfo.get(devaddr)
+    const { otaa } = devicesInfo.get(devaddr)
+    if (otaa) {
+      throw new Error('Currently OTAA downlink is unsupported')
+    }
+    const { abp } = devicesInfo.get(devaddr)
     const dataString = await encryptLoraDataAsconMac(
       data,
-      nwkskey,
-      appskey,
+      abp.nwkskey,
+      abp.appskey,
       devaddr,
-      downLinkCounter,
+      abp.downlink,
       200
     )
     const dataBuffer = Buffer.from(dataString, 'hex')
@@ -403,12 +474,13 @@ app.post('/client/downlink', async (req, res) => {
     const jsonBuffer = Buffer.from(json, 'utf8')
     const msg = Buffer.concat([prefix, jsonBuffer])
     // Update F_CNT for downlink
-    devicesInfo.set(devaddr, [appskey, nwkskey, downLinkCounter + 1])
+    abp.downlink = abp.downlink + 1
+    devicesInfo.set(devaddr, { abp: abp })
     // Send data to gateway
     server.send(msg, GW_PORT, GW_ADDR)
     console.log('Downlink device', devaddr)
     console.log('Downlink random token:', randomToken)
-    console.log('Downlink f_cnt:', downLinkCounter + 1)
+    console.log('Downlink f_cnt:', abp.downlink)
     console.log('Downlink data', JSON.parse(json))
     res.status(200).send('\nDownstream initialized success\n')
   } catch (error) {
@@ -490,6 +562,50 @@ server.on('message', (msg, rinfo) => {
   udpPktFwdState = UDP_PKT_FWD_STATES.IDLE
 })
 
+const processJoinRequest = async (dataBase64, loraPktHex) => {
+  try {
+    const loraNodeAppEUIArr = bufferLeToBe(
+      Buffer.from(loraPktHex.slice(2, 18), 'hex'),
+      8
+    )
+    const loraNodeDevEUIArr = bufferLeToBe(
+      Buffer.from(loraPktHex.slice(18, 34), 'hex'),
+      8
+    )
+    const loraNodeDevEUI = Buffer.from(loraNodeDevEUIArr)
+      .toString('hex')
+      .toUpperCase()
+    const loraNodeAppEUI = Buffer.from(loraNodeAppEUIArr)
+      .toString('hex')
+      .toUpperCase()
+    if (!devicesInfo.has(loraNodeDevEUI)) {
+      throw new Error('Device has not been provisioned yet:')
+    }
+    const { otaa } = devicesInfo.get(loraNodeDevEUI)
+    if (!otaa) {
+      throw new Error('Device OTAA info is unvalid')
+    }
+    const { deviceData, deviceSessionData } = otaa
+    if (deviceData.appeui != loraNodeAppEUI) {
+      throw new Error('Device AppEUI does not match Network server AppEUI')
+    }
+    // Confirm MIC is correct
+    const result = await lorawanProcessJoinRequest(
+      dataBase64,
+      deviceData.appkey
+    )
+    // Other logic to reject if any
+    /* Waiting */
+    if (!result) {
+      throw new Error('Failed to confirm MIC')
+    }
+    return 1
+  } catch (error) {
+    console.error('[ERROR] Process join request:', error.message)
+  }
+  return 0
+}
+
 // @param state UDP_PKT_FWD_STATES object member
 // @param buff The msg Buffer type
 const networkServerProcessData = async (state, buff) => {
@@ -511,6 +627,13 @@ const networkServerProcessData = async (state, buff) => {
         const loraPktBuf = Buffer.from(loraPktBase64, 'base64')
         // Turn to hex string
         const loraPktHex = loraPktBuf.toString('hex')
+        // Get LoRa MHDR
+        const loraNodeMHDR = Buffer.from(loraPktHex.slice(0, 2), 'hex')[0]
+        // Package is join-request
+        if (loraNodeMHDR == 0) {
+          processJoinRequest(loraPktBase64, loraPktHex)
+          continue
+        }
         // Get LoRa node address
         let loraNodeAddressLittleEndian = loraPktHex.slice(2, 10).toUpperCase()
         if (loraNodeAddressLittleEndian.length % 2 !== 0) {
@@ -526,12 +649,15 @@ const networkServerProcessData = async (state, buff) => {
         if (!devicesInfo.has(loraNodeAddress)) {
           throw new Error(`Unknown device address ${loraNodeAddress}`)
         }
-        const [appskey, nwkskey, downLinkCounter] =
-          devicesInfo.get(loraNodeAddress)
+        const { otaa } = devicesInfo.get(loraNodeAddress)
+        if (otaa) {
+          throw new Error('Currently OTAA in unsupported')
+        }
+        const { abp } = devicesInfo.get(loraNodeAddress)
         const [data, packet] = await decryptLoraRawDataAsconMac(
           jsonObject.rxpk[i].data,
-          nwkskey,
-          appskey
+          abp.nwkskey,
+          abp.appskey
         )
         const endTimer = Date.now()
         console.log('###### Finish, end time in ms:', endTimer)
@@ -663,6 +789,14 @@ const networkServerProcessData = async (state, buff) => {
   } catch (error) {
     console.error('[ERROR] Process data:', error.message)
   }
+}
+
+const bufferLeToBe = (buffer, length) => {
+  const result = []
+  for (let i = 0; i < length; i++) {
+    result.push(buffer[length - 1 - i])
+  }
+  return result
 }
 
 // @param buff The msg Buffer type

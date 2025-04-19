@@ -206,9 +206,48 @@ static int32_t lora_asconmac_decrypt(char *argv[])
     return 0;
 }
 
+static int lora_join_request_check(char *argv[])
+{
+    // Convert hex string to byte array
+    if (hex_string_to_byte(APPSKEY_INPUT_DATA, appskey1, 16) != 0) {
+        printf("\nCan not convert to byte array for appskey");
+        return -1;
+    }
+
+    size_t data_out_size = 0;
+    size_t data_in_size = strlen((const char *)BASE64_INPUT_DATA);
+    if (!data_in_size) {
+        /* cannot convert to a number */
+        printf("\nCan not get size of data input");
+        return -2;
+    }
+    /* Base64 decoded package - [MHDR + FHDR + FPORT + FRMPayload + MIC] */
+    unsigned char *decoded = base64_decode(BASE64_INPUT_DATA, data_in_size, &data_out_size);
+    /* Init join-request struct */
+    struct loramac_phys_payload_join_request *jr_frame_in = (struct loramac_phys_payload_join_request *)decoded;
+    /* Turn Le to Be */
+    reverse_bytes(jr_frame_in->app_eui, 8);
+    reverse_bytes(jr_frame_in->dev_eui, 8);
+    reverse_bytes(jr_frame_in->dev_nonce, 2);
+    /* Pack the frame */
+    struct loramac_phys_payload_join_request *jr_frame_out;
+    loramac_pack_join_request(&jr_frame_out, jr_frame_in->app_eui, jr_frame_in->dev_eui, jr_frame_in->dev_nonce, appskey1);
+    /* Check MIC */
+    for (uint8_t i = 0; i < 4; i++) {
+        if (jr_frame_out->mic[i] != jr_frame_in->mic[i]) {
+            printf("\nMIC does not match join-request");
+            return -3;
+        }
+    }
+    base64_cleanup();
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
-    if (argc == 4) {
+    if (argc == 3) {
+        return lora_join_request_check(argv);
+    } if (argc == 4) {
         return lora_asconmac_decrypt(argv);
     } else if (argc == 7) {
         return lora_asconmac_encrypt(argv);
