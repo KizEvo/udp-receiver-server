@@ -143,3 +143,43 @@ export const lorawanProcessJoinRequest = async (data, appkeyHexString) => {
     })
   })
 }
+
+export const lorawanProcessJoinAccept = async (data, appkeyHexString) => {
+  return new Promise((resolve, reject) => {
+    // Pass Base64 package to C program
+    let command
+    if (process.platform === 'win32') {
+      console.log('OS is Window')
+      if (fs.existsSync('.\\asconmacav12\\out.exe')) {
+        console.log('Found .exe, use it')
+        command = '.\\asconmacav12\\out.exe'
+      } else {
+        console.log('Cannot find .exe, use the default one')
+        command = '.\\asconmacav12\\out'
+      }
+    } else {
+      /* Assuming this is Linux */
+      console.log('OS IS NOT Window, use the default one')
+      command = './asconmacav12/out'
+    }
+    const { appNonce, devAddr, devNonce, dlSettings, rxDelay, netId } = data
+    command += ` "${appNonce}" "${appkeyHexString}" "${dlSettings}" "${devAddr}" "${rxDelay}" "${netId}" "${devNonce}"`
+    exec(command, (error, stdout) => {
+      if (error) {
+        console.error(`Error: ${error.message}`, stdout.trim())
+        resolve(null)
+      }
+      const lines = stdout.trim().split('\n')
+      const info = []
+      // Should be 3 lines
+      // 1. nwkskey, network store this to db, do not send to device
+      // 2. appskey, network store this to db, do not send to device
+      // 3. fully constructed join-accept frame, send to device
+      for (let i = 0; i < lines.length; i++) {
+        lines[i] = lines[i].replace(/[\n\r]+/g, '')
+        info.push(hexStringToByteArray(lines[i]))
+      }
+      resolve(info)
+    })
+  })
+}

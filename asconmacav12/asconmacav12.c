@@ -8,6 +8,7 @@
 #include "crypto_auth.h"
 #include "base64.h"
 #include "loramac.h"
+#include "aes.h"
 
 #include <time.h>
 
@@ -17,15 +18,32 @@
 #define DEV_ADDR_INPUT_DATA argv[4]
 #define DOWN_CNT_INPUT_DATA argv[5]
 #define FPORT_INPUT_DATA    argv[6]
+
+#define APPNONCE_INPUT_DATA argv[1]
+#define DLSETTIN_INPUT_DATA argv[3]
+#define RXDELAY_INPUT_DATA  argv[5]
+#define NETID_INPUT_DATA    argv[6]
+#define DEVNONCE_INPUT_DATA argv[7]
 /* x is pointer to unsigned char */
 #define LE_BYTES_TO_UINT32(x) ((*(x + 3)) << 24) | ((*(x + 2)) << 16) | ((*(x + 1)) << 8) | ((*(x)))
 #define LE_BYTES_TO_UINT16(x) ((*(x + 1)) << 8) | ((*(x)))
 #define LE_UINT32(x) (((x >> 24) & 0xFF) | ((x >> 8) & 0xFF00) | ((x << 8) & 0xFF0000) | ((x << 24) & 0xFF000000))
 
 #define DEVICES_ADDRBYTES 4
+#define APPNONCE_BYTES    3
+#define DLSETTIN_BYTES    1
+#define RXDELAY_BYTES     1
+#define NETID_BYTES       3
+#define DEVNONCE_BYTES    2
 
 static unsigned char nwskey1[CRYPTO_KEYBYTES] = { 0 };
 static unsigned char appskey1[CRYPTO_KEYBYTES] = { 0 };
+
+static unsigned char appnonce[APPNONCE_BYTES] = {0};
+static unsigned char dlsettings[DLSETTIN_BYTES] = {0};
+static unsigned char rxdelay[RXDELAY_BYTES] = {0};
+static unsigned char netid[NETID_BYTES] = {0};
+static unsigned char devnonce[DEVNONCE_BYTES] = {0};
 
 static unsigned char tag[CRYPTO_BYTES] = { 0 };
 
@@ -243,6 +261,122 @@ static int lora_join_request_check(char *argv[])
     return 0;
 }
 
+static int lora_join_accept_process(char *argv[])
+{
+    // Process join-accept
+    // Generate AppSKey and NwkSKey
+    // Pack join-accept message
+    // => 3 outputs to NodeJS
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(APPNONCE_INPUT_DATA, appnonce, APPNONCE_BYTES) != 0) {
+        printf("\nCan not convert to byte array for appnonce");
+        return -1; // Exit on error
+    }
+
+    // Device provisioned key (only known to device + network server)
+    if (hex_string_to_byte(APPSKEY_INPUT_DATA, appskey1, CRYPTO_KEYBYTES) != 0) {
+        printf("\nCan not convert to byte array for appkey");
+        return -1; // Exit on error
+    }
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(DLSETTIN_INPUT_DATA, dlsettings, DLSETTIN_BYTES) != 0) {
+        printf("\nCan not convert to byte array for dlsettings");
+        return -1; // Exit on error
+    }
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(DEV_ADDR_INPUT_DATA, devices, DEVICES_ADDRBYTES) != 0) {
+        printf("\nCan not convert to byte array for devaddr");
+        return -1; // Exit on error
+    }
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(RXDELAY_INPUT_DATA, rxdelay, RXDELAY_BYTES) != 0) {
+        printf("\nCan not convert to byte array for rxdelay");
+        return -1; // Exit on error
+    }
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(NETID_INPUT_DATA, netid, NETID_BYTES) != 0) {
+        printf("\nCan not convert to byte array for netid");
+        return -1; // Exit on error
+    }
+
+    // Convert hex string to byte array
+    if (hex_string_to_byte(DEVNONCE_INPUT_DATA, devnonce, DEVNONCE_BYTES) != 0) {
+        printf("\nCan not convert to byte array for devnonce");
+        return -1; // Exit on error
+    }
+    uint8_t out_nwkskey[CRYPTO_KEYBYTES] = {0};
+    uint8_t out_appskey[CRYPTO_KEYBYTES] = {0};
+    uint8_t out_ja_decrypted[CRYPTO_KEYBYTES] = {0};
+
+    uint8_t in_nwkskey[CRYPTO_KEYBYTES] = {0};
+    uint8_t in_appskey[CRYPTO_KEYBYTES] = {0};
+
+    struct join_accept_xskey_input in = {0};
+    uint8_t i;
+    // nwkskey
+    in.byte1 = 0x01;
+    for (i = 0; i < APPNONCE_BYTES; i++) {
+        in.app_nonce[i] = appnonce[APPNONCE_BYTES - 1 - i];
+    }
+    for (i = 0; i < NETID_BYTES; i++) {
+        in.net_id[i] = netid[NETID_BYTES - 1 - i];
+    }
+    for (i = 0; i < DEVNONCE_BYTES; i++) {
+        in.dev_nonce[i] = devnonce[DEVNONCE_BYTES - 1 - i];
+    }
+    aes_context nwkskey_ctx = {0};
+    aes_set_key(appskey1, 16, &nwkskey_ctx);
+    aes_encrypt((uint8_t *)&in, out_nwkskey, &nwkskey_ctx);
+
+    // appskey
+    in.byte1 = 0x02;
+    for (i = 0; i < APPNONCE_BYTES; i++) {
+        in.app_nonce[i] = appnonce[APPNONCE_BYTES - 1 - i];
+    }
+    for (i = 0; i < NETID_BYTES; i++) {
+        in.net_id[i] = netid[NETID_BYTES - 1 - i];
+    }
+    for (i = 0; i < DEVNONCE_BYTES; i++) {
+        in.dev_nonce[i] = devnonce[DEVNONCE_BYTES - 1 - i];
+    }
+    aes_context appskey_ctx = {0};
+    aes_set_key(appskey1, CRYPTO_KEYBYTES, &appskey_ctx);
+    aes_encrypt((uint8_t *)&in, out_appskey, &appskey_ctx);
+
+    struct loramac_phys_payload_join_accept *ja_frame;
+    loramac_pack_join_accept(&ja_frame, appnonce, netid, devices, dlsettings, rxdelay, appskey1);
+
+    // Decrypt this join-accept frame
+    aes_context ja_ctx = {0};
+    aes_set_key(appskey1, CRYPTO_KEYBYTES, &ja_ctx);
+    uint8_t ja_frame_in[16] = {0};
+    memcpy(ja_frame_in, (uint8_t *)ja_frame->app_nonce, CRYPTO_KEYBYTES);
+    aes_decrypt(ja_frame_in, out_ja_decrypted, &ja_ctx);
+
+    // Print to stdin
+    printf("\n\n");
+    for (i = 0; i < CRYPTO_KEYBYTES; i++) {
+        printf("%.2x", out_nwkskey[i]);
+    }
+    printf("\n");
+    for (i = 0; i < CRYPTO_KEYBYTES; i++) {
+        printf("%.2x", out_appskey[i]);
+    }
+    printf("\n");
+    printf("%.2x", ja_frame->m_hdr);
+    for (i = 0; i < CRYPTO_KEYBYTES; i++) {
+        printf("%.2x", out_ja_decrypted[i]);
+    }
+
+    printf("\n");
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     if (argc == 3) {
@@ -251,6 +385,8 @@ int main(int argc, char *argv[])
         return lora_asconmac_decrypt(argv);
     } else if (argc == 7) {
         return lora_asconmac_encrypt(argv);
+    } else if (argc == 8) {
+        return lora_join_accept_process(argv);
     }
     /* invalid input parameter size */
     printf("\nInvalid input parameter size: %d", argc);

@@ -19,6 +19,7 @@ import {
   decryptLoraRawDataAsconMac,
   encryptLoraDataAsconMac,
   lorawanProcessJoinRequest,
+  lorawanProcessJoinAccept,
 } from './lorawan.js'
 
 // Import the functions you need from the SDKs you need
@@ -435,58 +436,82 @@ app.get('/admin/reliability-test-end', async (req, res) => {
                           </html>`)
 })
 
-// Downlink
-app.post('/client/downlink', async (req, res) => {
+const processDownlinkMessage = async (dataInput, encrypt) => {
   try {
-    console.log('Downstream initialized by application server')
     if (!PULL_DATA_RECEIVED) {
       throw new Error("Data exchange hasn't been initialized by gateway")
     }
-    // Encrypt data
-    const { devaddr, data } = req.body
-    if (!devicesInfo.has(devaddr)) {
-      throw new Error('Undefined device address')
-    }
-    const { otaa } = devicesInfo.get(devaddr)
-    if (otaa) {
-      throw new Error('Currently OTAA downlink is unsupported')
-    }
-    const { abp } = devicesInfo.get(devaddr)
-    const dataString = await encryptLoraDataAsconMac(
-      data,
-      abp.nwkskey,
-      abp.appskey,
-      devaddr,
-      abp.downlink,
-      200
-    )
-    const dataBuffer = Buffer.from(dataString, 'hex')
-    const dataBase64 = dataBuffer.toString('base64')
+    let dataString
+    let rfSize
     // Generate random token
     const randomToken = Buffer.from([
       Math.floor(Math.random() * 15),
       Math.floor(Math.random() * 15),
     ])
-    const rfSize = data.length + 13 // 13 LoRaWAN protocol package
-    // Generate JSON string and receive data from req.body
+    // Encrypt data
+    if (encrypt) {
+      const { devaddr, data } = dataInput
+      if (!devicesInfo.has(devaddr)) {
+        throw new Error('Undefined device address')
+      }
+      const { otaa } = devicesInfo.get(devaddr)
+      if (otaa) {
+        throw new Error('Currently OTAA downlink by app is unsupported')
+      }
+      const { abp } = devicesInfo.get(devaddr)
+      dataString = await encryptLoraDataAsconMac(
+        data,
+        abp.nwkskey,
+        abp.appskey,
+        devaddr,
+        abp.downlink,
+        200
+      )
+      // Update F_CNT for downlink
+      abp.downlink = abp.downlink + 1
+      devicesInfo.set(devaddr, { abp: abp })
+      // 13 LoRaWAN protocol package
+      rfSize = data.length + 13
+      console.log('Downlink device', devaddr)
+      console.log('Downlink f_cnt:', abp.downlink)
+    } else {
+      // Do not encrypt data, packet is prepared
+      dataString = dataInput
+      rfSize = dataString.length / 2 // Since input is in the format of hex string
+    }
+    const dataBuffer = Buffer.from(dataString, 'hex')
+    const dataBase64 = dataBuffer.toString('base64')
+
+    // Generate JSON string and receive data
     const json = `{"txpk":{"imme":true,"freq":921.4,"rfch":0,"powe":14,"modu":"LORA","datr":"SF7BW125","codr":"4/8","ipol":false,"prea":8,"size":${rfSize},"data":"${dataBase64}"}}`
     const prefix = Buffer.from([0x02, ...randomToken, 0x03])
     const jsonBuffer = Buffer.from(json, 'utf8')
     const msg = Buffer.concat([prefix, jsonBuffer])
-    // Update F_CNT for downlink
-    abp.downlink = abp.downlink + 1
-    devicesInfo.set(devaddr, { abp: abp })
-    // Send data to gateway
-    server.send(msg, GW_PORT, GW_ADDR)
-    console.log('Downlink device', devaddr)
+
     console.log('Downlink random token:', randomToken)
-    console.log('Downlink f_cnt:', abp.downlink)
     console.log('Downlink data', JSON.parse(json))
-    res.status(200).send('\nDownstream initialized success\n')
+
+    return msg
+  } catch (error) {
+    console.log('[ERROR] Process downlink message:', error.message)
+  }
+  return null
+}
+
+// Downlink
+app.post('/client/downlink', async (req, res) => {
+  try {
+    console.log('Downstream initialized by application server')
+    const msg = await processDownlinkMessage(req.body, 1)
+    if (msg) {
+      // Send data to gateway
+      server.send(msg, GW_PORT, GW_ADDR)
+      res.status(200).send('\nDownstream initialized success\n')
+    }
   } catch (error) {
     console.error('[ERROR] Downlink:', error.message)
-    res.status(401).send('\nFailed to init downstream\n')
   }
+  res.status(401).send('\nFailed to init downstream\n')
 })
 
 // Start express server
@@ -562,8 +587,84 @@ server.on('message', (msg, rinfo) => {
   udpPktFwdState = UDP_PKT_FWD_STATES.IDLE
 })
 
-const processJoinRequest = async (dataBase64, loraPktHex) => {
+function delay(time) {
+  return new Promise((resolve) => setTimeout(resolve, time))
+}
+
+const processJoinAccept = async (
+  loraNodeDevNonceStr,
+  loraNodeDevEUIBeStr,
+  appkey,
+  rxpkInfo
+) => {
+  // rxpkInfo is used to read coding rate and data rate from device
+  // so that it can set join-accept DLSettings correctly
+  // This is unused for now
   try {
+    console.log('Process join-accept message')
+    if (!devicesInfo.has(loraNodeDevEUIBeStr)) {
+      // Sanity check
+      throw new Error('Device has not been provisioned yet:')
+    }
+    const data = {
+      appNonce: generateRandomHex(6),
+      devAddr: '0A' + generateRandomHex(6), // See NwkID for netID and DevAddr on OTAA
+      devNonce: loraNodeDevNonceStr,
+      dlSettings: '02', // RX1DROffset = 0 and RX2 is DR2
+      rxDelay: '01', // Delay 1 second
+      netId: '458C0A', // 7 LSB = 0A
+    }
+    const dataJoinAccept = await lorawanProcessJoinAccept(data, appkey)
+    if (dataJoinAccept == null) {
+      throw new Error('Failed to process join-accept message')
+    }
+    // Next step: store this info (local and db)
+    const { otaa } = devicesInfo.get(loraNodeDevEUIBeStr)
+    if (!otaa) {
+      throw new Error('Device OTAA info is unvalid')
+    }
+    const { deviceData, deviceSessionData } = otaa
+    deviceSessionData.nwkskey = dataJoinAccept[0].toString('hex').toUpperCase()
+    deviceSessionData.appskey = dataJoinAccept[1].toString('hex').toUpperCase()
+    deviceSessionData.created = Date.now()
+    deviceSessionData.joinAccept = true
+    deviceSessionData.devaddr = data.devAddr
+
+    // Update local
+    devicesInfo.set(loraNodeDevEUIBeStr, {
+      otaa: { deviceData, deviceSessionData },
+    })
+    // Update db session field
+    await updateDoc(doc(firebaseDb, sensorDevColl, loraNodeDevEUIBeStr), {
+      deviceData: deviceData,
+      deviceSessionData: deviceSessionData,
+    })
+    // Transmit frame to device
+    const dataInput = dataJoinAccept[2].toString('hex').toUpperCase()
+    const msg = await processDownlinkMessage(dataInput, 0)
+    // Wait for device to set receive window
+    console.log('Wait few seconds for device to set receive window')
+    await new Promise((resolve) => setTimeout(resolve, 5000))
+    if (msg) {
+      // Send data to gateway
+      server.send(msg, GW_PORT, GW_ADDR)
+      console.log('Join-accept sent', dataInput, 'to gateway')
+      return 1
+    }
+  } catch (error) {
+    console.error('[ERROR] Join accept process:', error.message)
+  }
+  return 0
+}
+
+const processJoinRequest = async (dataBase64, loraPktHex) => {
+  const resultData = {
+    loraNodeDevNonceStr: null,
+    loraNodeDevEUIBeStr: null,
+    appkey: null,
+  }
+  try {
+    console.log('Process join-request message')
     const loraNodeAppEUIArr = bufferLeToBe(
       Buffer.from(loraPktHex.slice(2, 18), 'hex'),
       8
@@ -599,11 +700,20 @@ const processJoinRequest = async (dataBase64, loraPktHex) => {
     if (!result) {
       throw new Error('Failed to confirm MIC')
     }
-    return 1
+    const loraNodeDevNonceArr = bufferLeToBe(
+      Buffer.from(loraPktHex.slice(34, 38), 'hex'),
+      2
+    )
+    resultData.loraNodeDevNonceStr = Buffer.from(loraNodeDevNonceArr)
+      .toString('hex')
+      .toUpperCase()
+    resultData.loraNodeDevEUIBeStr = loraNodeDevEUI
+    resultData.appkey = deviceData.appkey
+    return resultData
   } catch (error) {
     console.error('[ERROR] Process join request:', error.message)
   }
-  return 0
+  return resultData
 }
 
 // @param state UDP_PKT_FWD_STATES object member
@@ -631,7 +741,18 @@ const networkServerProcessData = async (state, buff) => {
         const loraNodeMHDR = Buffer.from(loraPktHex.slice(0, 2), 'hex')[0]
         // Package is join-request
         if (loraNodeMHDR == 0) {
-          processJoinRequest(loraPktBase64, loraPktHex)
+          const { loraNodeDevNonceStr, loraNodeDevEUIBeStr, appkey } =
+            await processJoinRequest(loraPktBase64, loraPktHex)
+          if (loraNodeDevEUIBeStr == null) {
+            continue
+          }
+          // Join-request accepted, process with join-accept
+          await processJoinAccept(
+            loraNodeDevNonceStr,
+            loraNodeDevEUIBeStr,
+            appkey,
+            jsonObject.rxpk[i]
+          )
           continue
         }
         // Get LoRa node address
