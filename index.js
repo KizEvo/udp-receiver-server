@@ -607,7 +607,7 @@ const processJoinAccept = async (
       throw new Error('Device has not been provisioned yet:')
     }
     const data = {
-      appNonce: generateRandomHex(6),
+      appNonce: 'A0A0A0', // This will be fixed later, it need to be a number that is incremented whenever device send a join-request and server generate a join-accept
       devAddr: '0A' + generateRandomHex(6), // See NwkID for netID and DevAddr on OTAA
       devNonce: loraNodeDevNonceStr,
       dlSettings: '02', // RX1DROffset = 0 and RX2 is DR2
