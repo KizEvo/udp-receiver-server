@@ -36,6 +36,10 @@
 #define NETID_BYTES       3
 #define DEVNONCE_BYTES    2
 
+#ifndef CRYPTO_BYTES
+#define CRYPTO_BYTES 16
+#endif
+
 static unsigned char nwskey1[CRYPTO_KEYBYTES] = { 0 };
 static unsigned char appskey1[CRYPTO_KEYBYTES] = { 0 };
 
@@ -109,25 +113,25 @@ static int32_t lora_asconmac_encrypt(char *argv[])
     /* Use the LoRaMAC API to calculate the MIC and compare with decoded MIC */
     struct loramac_phys_payload *loramac_payload = loramac_init();
 
-    uint8_t f_port = (uint8_t)atoi(FPORT_INPUT_DATA);
-	loramac_fill_mac_payload(loramac_payload, f_port, NULL);
-
-	loramac_fill_phys_payload(loramac_payload, LORAMAC_PHYS_PAYLOAD_MHDR_UNCONFIRM_DATA_DOWN, 0);
-
     uint32_t dev_addr = (devices[0] << 24) | (devices[1] << 16) | (devices[2] << 8) | devices[3];
     uint32_t loramac_f_cnt = (uint32_t)atoi(DOWN_CNT_INPUT_DATA);
-    loramac_fill_fhdr(loramac_payload, dev_addr, 0, loramac_f_cnt, NULL);
+    uint8_t f_port = (uint8_t)atoi(FPORT_INPUT_DATA);
+    uint8_t lora_package[data_out_size + 25]; // FRM_PAYLOAD + 25 modified LoRaWAN protocol AEAD excepts FOpts
+    uint8_t lora_package_size = 0;
 
-    loramac_fill_mac_payload(loramac_payload, f_port, decoded);
+    loramac_fill_fhdr(loramac_payload, dev_addr, 0, loramac_f_cnt, 0);
+	loramac_fill_mac_payload(loramac_payload, f_port, decoded);
+	loramac_fill_phys_payload(loramac_payload, LORAMAC_PHYS_PAYLOAD_MHDR_UNCONFIRM_DATA_DOWN, 0);
 
-    uint32_t loramac_mic = 0;
-    loramac_frm_payload_encryption(loramac_payload, data_out_size, appskey1);
-    loramac_calculate_mic(loramac_payload, data_out_size, nwskey1, 1, &loramac_mic); // FRM_PAYLOAD + 1 MHDR + 7 FHDR + 1 FPORT
-    loramac_fill_phys_payload(loramac_payload, LORAMAC_PHYS_PAYLOAD_MHDR_UNCONFIRM_DATA_DOWN, loramac_mic);
+	// fully constructed LoRaWAN package: header + frm_payload + MIC (tag)
+	int res = loramac_enc_aead(loramac_payload, lora_package, &lora_package_size, data_out_size, appskey1);
 
-    uint8_t lora_package[data_out_size + 13]; // FRM_PAYLOAD + 13 LoRaWAN protocol excepts FOpts
-    loramac_serialize_data(loramac_payload, lora_package, data_out_size);
-    for (uint8_t i = 0; i < data_out_size + 13; i++) {
+    if (res) {
+        printf("\nEncryption failed");
+        return res;
+    }
+    printf("\n");
+    for (uint8_t i = 0; i < lora_package_size; i++) {
         printf("%.2x", lora_package[i]);
     }
     printf("\n");
@@ -151,7 +155,7 @@ static int32_t lora_asconmac_decrypt(char *argv[])
     }
 
     size_t data_out_size = 0;
-    size_t data_in_size = strlen((const char *)BASE64_INPUT_DATA);
+    size_t data_in_size = strlen(BASE64_INPUT_DATA);
     if (!data_in_size) {
         /* cannot convert to a number */
         printf("\nCan not get size of data input");
@@ -161,65 +165,35 @@ static int32_t lora_asconmac_decrypt(char *argv[])
     unsigned char *decoded = base64_decode(BASE64_INPUT_DATA, data_in_size, &data_out_size);
     /* Use the LoRaMAC API to calculate the MIC and compare with decoded MIC */
     struct loramac_phys_payload *payload = loramac_init();
-    uint8_t frm_payload_size = data_out_size - (1 + 4 + 1 + 2 + 1 + 4); /* [MHDR + FHDR[DevAddr + ..] + FPORT + MIC] */
-    uint32_t dev_addr = LE_BYTES_TO_UINT32((&decoded[LRMAC_BYTE_OFFSET_DEVADDR]));
-    uint16_t f_cnt = LE_BYTES_TO_UINT16((&decoded[LRMAC_BYTE_OFFSET_FCNT]));
-    uint8_t f_ctrl = decoded[LRMAC_BYTE_OFFSET_FCTRL];
+    uint8_t frm_payload_size = data_out_size - (1 + 4 + 1 + 2 + 1 + 16); /* [MHDR + FHDR[DevAddr + ..] + FPORT + MIC] */
+    uint8_t out_frm_payload[255] = {0};
+    uint8_t out_frm_payload_size = 0;
 
-    loramac_fill_fhdr(payload, dev_addr, f_ctrl, f_cnt, NULL);
-
-    uint8_t f_port = decoded[LRMAC_BYTE_OFFSET_FPORT];
-    uint8_t *frm_payload = &decoded[LRMAC_BYTE_OFFSET_FRMPAYLOAD];
-    reverse_bytes(frm_payload, frm_payload_size);
-    loramac_fill_mac_payload(payload, f_port, frm_payload);
-
-    uint8_t m_hdr = decoded[LRMAC_BYTE_OFFSET_MHDR];
-
-    loramac_fill_phys_payload(payload, m_hdr, 0);
-
-    if (f_ctrl & 0xF) {
-        /* currently not support FOpts */
-        printf("\nFOpts is asserted but we don't support it");
+    int res = loramac_dec_aead(payload, out_frm_payload, &out_frm_payload_size, decoded, data_out_size, appskey1);
+    end = clock();
+    if (res) {
+        printf("\nCan not decrypt message size %zu with input size %zu: 0x", data_out_size, data_in_size);
+        for (uint8_t i = 0; i < data_out_size; i++) {
+            printf("%.2x", decoded[i]);
+        }
+        printf("\n");
         return -3;
     }
-    uint32_t mic = 0;
-    uint32_t decoded_mic = 0;
-    /* Compare MIC */
-    loramac_calculate_mic(payload, frm_payload_size, nwskey1, 1, &mic);
-    decoded_mic = LE_BYTES_TO_UINT32(&decoded[LRMAC_BYTE_OFFSET_FRMPAYLOAD + frm_payload_size]);
-    if (mic != decoded_mic) {
-        printf("\nMIC does not match");
+    if (out_frm_payload_size != frm_payload_size) {
+        printf("\nSize expectation does not match: %u %u", out_frm_payload_size, frm_payload_size);
         return -4;
     }
-    /*
-     * Decrypt LoRaWAN payload
-     *
-     * Yes I know, the function name is 'encryption' then
-     * how can it decrypt ? The LoRaWAN payload encryption
-     * and decryption is special because the algorithm does
-     * not run with the payload as input but rather a block
-     * called A[16] which is specified in the spec. This get
-     * encrypted and produce S[16] and then it's XOR with the
-     * LoRaWAN payload.
-     *
-     * So now we can just run the encryption function. Which
-     * will produce the same S[16] and XOR with the encrypted
-     * data will produce the decrypted payload.
-     *
-     * Check the spec if this is not clear to you.
-     */
-    loramac_frm_payload_encryption(payload, frm_payload_size, appskey1);
-    end = clock();
+    printf("\n");
     double elapsed_time_in_us = (double)(end - start) * 1000000.0 / CLOCKS_PER_SEC;
-    for (uint8_t i = 0; i < frm_payload_size; i++) {
-        printf("%.2x", frm_payload[i]);
+    for (uint8_t i = 0; i < out_frm_payload_size; i++) {
+        printf("%.2x", out_frm_payload[i]);
     }
     printf("\n");
     printf("%.8u\n", (uint64_t)elapsed_time_in_us);
-    printf("%x\n", dev_addr);
-    printf("%.4x\n", f_cnt);
-    printf("%.2x\n", f_port);
-    printf("%.2x\n", m_hdr);
+    printf("%.8x\n", payload->mac_payload.f_hdr.dev_addr);
+    printf("%.4x\n", payload->mac_payload.f_hdr.f_cnt);
+    printf("%.2x\n", payload->mac_payload.f_port);
+    printf("%.2x\n", payload->m_hdr);
     base64_cleanup();
     return 0;
 }
@@ -251,7 +225,7 @@ static int lora_join_request_check(char *argv[])
     struct loramac_phys_payload_join_request *jr_frame_out;
     loramac_pack_join_request(&jr_frame_out, jr_frame_in->app_eui, jr_frame_in->dev_eui, jr_frame_in->dev_nonce, appskey1);
     /* Check MIC */
-    for (uint8_t i = 0; i < 4; i++) {
+    for (uint8_t i = 0; i < sizeof(jr_frame_out->mic); i++) {
         if (jr_frame_out->mic[i] != jr_frame_in->mic[i]) {
             printf("\nMIC does not match join-request");
             return -3;
@@ -329,9 +303,7 @@ static int lora_join_accept_process(char *argv[])
     for (i = 0; i < DEVNONCE_BYTES; i++) {
         in.dev_nonce[i] = devnonce[DEVNONCE_BYTES - 1 - i];
     }
-    aes_context nwkskey_ctx = {0};
-    aes_set_key(appskey1, 16, &nwkskey_ctx);
-    aes_encrypt((uint8_t *)&in, out_nwkskey, &nwkskey_ctx);
+    crypto_auth(out_nwkskey, &in.byte1, sizeof(struct join_accept_xskey_input), appskey1);
 
     // appskey
     in.byte1 = 0x02;
@@ -344,20 +316,15 @@ static int lora_join_accept_process(char *argv[])
     for (i = 0; i < DEVNONCE_BYTES; i++) {
         in.dev_nonce[i] = devnonce[DEVNONCE_BYTES - 1 - i];
     }
-    aes_context appskey_ctx = {0};
-    aes_set_key(appskey1, CRYPTO_KEYBYTES, &appskey_ctx);
-    aes_encrypt((uint8_t *)&in, out_appskey, &appskey_ctx);
+    crypto_auth(out_appskey, &in.byte1, sizeof(struct join_accept_xskey_input), appskey1);
 
+    // prepare join-accept
     struct loramac_phys_payload_join_accept *ja_frame;
-    loramac_pack_join_accept(&ja_frame, appnonce, netid, devices, dlsettings, rxdelay, appskey1);
-
-    // Decrypt this join-accept frame
-    aes_context ja_ctx = {0};
-    aes_set_key(appskey1, CRYPTO_KEYBYTES, &ja_ctx);
-    uint8_t ja_frame_in[16] = {0};
-    memcpy(ja_frame_in, (uint8_t *)ja_frame->app_nonce, CRYPTO_KEYBYTES);
-    aes_decrypt(ja_frame_in, out_ja_decrypted, &ja_ctx);
-
+    int retval = loramac_pack_join_accept(&ja_frame, appnonce, netid, devices, dlsettings, rxdelay, appskey1);
+    if (retval) {
+        printf("\nCan not pack join_accept: %d", retval);
+        return -1;
+    }
     // Print to stdin
     printf("\n\n");
     for (i = 0; i < CRYPTO_KEYBYTES; i++) {
@@ -368,9 +335,9 @@ static int lora_join_accept_process(char *argv[])
         printf("%.2x", out_appskey[i]);
     }
     printf("\n");
-    printf("%.2x", ja_frame->m_hdr);
-    for (i = 0; i < CRYPTO_KEYBYTES; i++) {
-        printf("%.2x", out_ja_decrypted[i]);
+    uint8_t *ja_frame_ptr = &ja_frame->m_hdr;
+    for (i = 0; i < sizeof(struct loramac_phys_payload_join_accept); i++) {
+        printf("%.2x", ja_frame_ptr[i]);
     }
 
     printf("\n");
