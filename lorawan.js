@@ -66,6 +66,7 @@ export const encryptLoraDataAsconMac = async (
     exec(command, (error, stdout) => {
       if (error) {
         console.error(`Error: ${error.message}`, stdout.trim())
+        console.log(command)
         resolve(null)
       }
       const dataBase64 = stdout.trim()
@@ -102,6 +103,7 @@ export const decryptLoraRawDataAsconMac = async (
     exec(command, (error, stdout) => {
       if (error) {
         console.error(`Error: ${error.message}`, stdout.trim())
+        console.log(command)
         resolve([null, null])
       }
       const lines = stdout.trim().split('\n')
@@ -167,6 +169,7 @@ export const lorawanProcessJoinAccept = async (data, appkeyHexString) => {
     exec(command, (error, stdout) => {
       if (error) {
         console.error(`Error: ${error.message}`, stdout.trim())
+        console.log(command)
         resolve(null)
       }
       const lines = stdout.trim().split('\n')

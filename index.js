@@ -308,27 +308,7 @@ app.get('/admin/reliability-test-start', async (req, res) => {
     if (!ADMIN_LOGGED_IN) {
       throw new Error('User has not logged in')
     }
-    const date = new Date()
-    const dateString = date.toDateString().replaceAll(' ', '')
-    const sensorDevMetaColl = 'sensorMetadataCollection' + dateString
-
-    const devicesMetadataQuerySnapshot = await getDocs(
-      collection(firebaseDb, sensorDevMetaColl)
-    )
-    console.log('Run reliability test, finding most recent device...')
-    let mostRecentDeviceTimestamp = 0
-    devicesMetadataQuerySnapshot.forEach((doc) => {
-      const data = doc.data()
-      if (mostRecentDeviceTimestamp < data.time_ms) {
-        mostRecentDeviceTimestamp = data.time_ms
-        mostRecentDevice = [doc.id, data, [], [], [], [], []]
-      }
-    })
-    if (mostRecentDevice.length > 0) {
-      console.log('Found:', mostRecentDevice[0])
-    } else {
-      throw new Error('Cannot found a running device')
-    }
+    const isError = await reliabilityTestStart(true, '')
   } catch (error) {
     console.error('[ERROR] Reliability start:', error.message)
     isError = true
@@ -435,6 +415,42 @@ app.get('/admin/reliability-test-end', async (req, res) => {
                             </body>
                           </html>`)
 })
+
+const reliabilityTestStart = async (enableByAdminPage, devAddr) => {
+  let isError = false
+  try {
+    if (enableByAdminPage) {
+      const date = new Date()
+      const dateString = date.toDateString().replaceAll(' ', '')
+      const sensorDevMetaColl = 'sensorMetadataCollection' + dateString
+
+      const devicesMetadataQuerySnapshot = await getDocs(
+        collection(firebaseDb, sensorDevMetaColl)
+      )
+      console.log('Run reliability test, finding most recent device...')
+      let mostRecentDeviceTimestamp = 0
+      devicesMetadataQuerySnapshot.forEach((doc) => {
+        const data = doc.data()
+        if (mostRecentDeviceTimestamp < data.time_ms) {
+          mostRecentDeviceTimestamp = data.time_ms
+          mostRecentDevice = [doc.id, data, [], [], [], [], []]
+        }
+      })
+    } else {
+      const data = { package_count: 0, time_ms: Date.now() }
+      mostRecentDevice = [devAddr, data, [], [], [], [], []]
+    }
+    if (mostRecentDevice.length > 0) {
+      console.log('Found:', mostRecentDevice[0])
+    } else {
+      throw new Error('Cannot found a running device')
+    }
+  } catch (error) {
+    isError = true
+    console.error('[ERROR] Reliability test start:', error.message)
+  }
+  return isError
+}
 
 const processDownlinkMessage = async (dataInput, encrypt) => {
   try {
@@ -716,6 +732,20 @@ const processJoinRequest = async (dataBase64, loraPktHex) => {
   return resultData
 }
 
+const findOtaaDevEuiBySessionDevAddr = (devAddr) => {
+  let res = undefined
+  for (const [key, value] of devicesInfo) {
+    if (key.length >= 16) {
+      const { otaa } = value
+      if (otaa.deviceSessionData.devaddr == devAddr) {
+        res = key
+        break
+      }
+    }
+  }
+  return res
+}
+
 // @param state UDP_PKT_FWD_STATES object member
 // @param buff The msg Buffer type
 const networkServerProcessData = async (state, buff) => {
@@ -730,8 +760,6 @@ const networkServerProcessData = async (state, buff) => {
       // rxpk may contain multiple RF package
       // so we loop through to check
       for (let i = 0; i < jsonObject.rxpk.length; i++) {
-        const startTimer = Date.now()
-        console.log('###### Decrypt package, start time in ms:', startTimer)
         // Create a buffer from the string
         const loraPktBase64 = jsonObject.rxpk[i].data
         const loraPktBuf = Buffer.from(loraPktBase64, 'base64')
@@ -767,19 +795,35 @@ const networkServerProcessData = async (state, buff) => {
         }
         // Reverse the bytes to convert from little-endian to big-endian
         const loraNodeAddress = bytes.reverse().join('')
+        let data
+        let packet
+        const startTimer = Date.now()
+        console.log('###### Decrypt package, start time in ms:', startTimer)
         if (!devicesInfo.has(loraNodeAddress)) {
-          throw new Error(`Unknown device address ${loraNodeAddress}`)
+          console.log('No matching ABP device address, try OTAA')
+          const currDevEuiKey = findOtaaDevEuiBySessionDevAddr(loraNodeAddress)
+          if (currDevEuiKey == undefined) {
+            throw new Error(`Unknown device address ${loraNodeAddress}`)
+          }
+          console.log('Found matching DevEUI with DevAddr via OTAA')
+          const { otaa } = devicesInfo.get(currDevEuiKey)
+          const [iData, iPacket] = await decryptLoraRawDataAsconMac(
+            jsonObject.rxpk[i].data,
+            otaa.deviceSessionData.nwkskey,
+            otaa.deviceSessionData.appskey
+          )
+          data = iData
+          packet = iPacket
+        } else {
+          const { abp } = devicesInfo.get(loraNodeAddress)
+          const [iData, iPacket] = await decryptLoraRawDataAsconMac(
+            jsonObject.rxpk[i].data,
+            abp.nwkskey,
+            abp.appskey
+          )
+          data = iData
+          packet = iPacket
         }
-        const { otaa } = devicesInfo.get(loraNodeAddress)
-        if (otaa) {
-          throw new Error('Currently OTAA in unsupported')
-        }
-        const { abp } = devicesInfo.get(loraNodeAddress)
-        const [data, packet] = await decryptLoraRawDataAsconMac(
-          jsonObject.rxpk[i].data,
-          abp.nwkskey,
-          abp.appskey
-        )
         const endTimer = Date.now()
         console.log('###### Finish, end time in ms:', endTimer)
         console.log('Time elapsed in ms:', endTimer - startTimer)
@@ -817,6 +861,22 @@ const networkServerProcessData = async (state, buff) => {
           dev_addr: loraNodeAddress,
           data: data_packet,
           data_size: data_packet.length,
+        }
+        if (mostRecentDevice.length <= 0 && fport == 100) {
+          const isError = await reliabilityTestStart(false, loraNodeAddress)
+          if (!isError) {
+            console.log(
+              '[Test] Device',
+              loraNodeAddress,
+              'started reliability test'
+            )
+          } else {
+            throw new Error(
+              '[Test] Device',
+              loraNodeAddress,
+              'tried to start reliability test but failed'
+            )
+          }
         }
         // If test enabled, don't write to db
         if (
