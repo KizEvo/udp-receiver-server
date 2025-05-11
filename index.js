@@ -457,6 +457,7 @@ const processDownlinkMessage = async (dataInput, encrypt) => {
     if (!PULL_DATA_RECEIVED) {
       throw new Error("Data exchange hasn't been initialized by gateway")
     }
+    console.log('Process downlink message')
     let dataString
     let rfSize
     // Generate random token
@@ -468,26 +469,42 @@ const processDownlinkMessage = async (dataInput, encrypt) => {
     if (encrypt) {
       const { devaddr, data } = dataInput
       if (!devicesInfo.has(devaddr)) {
-        throw new Error('Undefined device address')
+        console.log('No matching ABP device address, try OTAA')
+        const currDevEuiKey = findOtaaDevEuiBySessionDevAddr(devaddr)
+        if (currDevEuiKey == undefined) {
+          throw new Error(`Unknown device address ${devaddr}`)
+        }
+        console.log('Found matching DevEUI with DevAddr via OTAA')
+        const { otaa } = devicesInfo.get(currDevEuiKey)
+        const { deviceData, deviceSessionData } = otaa
+        dataString = await encryptLoraDataAsconMac(
+          data,
+          deviceSessionData.nwkskey,
+          deviceSessionData.appskey,
+          devaddr,
+          deviceSessionData.downlink,
+          200
+        )
+        deviceSessionData.downlink = deviceSessionData.downlink + 1
+        devicesInfo.set(currDevEuiKey, {
+          otaa: { deviceData, deviceSessionData },
+        })
+      } else {
+        const { abp } = devicesInfo.get(devaddr)
+        dataString = await encryptLoraDataAsconMac(
+          data,
+          abp.nwkskey,
+          abp.appskey,
+          devaddr,
+          abp.downlink,
+          200
+        )
+        // Update F_CNT for downlink
+        abp.downlink = abp.downlink + 1
+        devicesInfo.set(devaddr, { abp: abp })
       }
-      const { otaa } = devicesInfo.get(devaddr)
-      if (otaa) {
-        throw new Error('Currently OTAA downlink by app is unsupported')
-      }
-      const { abp } = devicesInfo.get(devaddr)
-      dataString = await encryptLoraDataAsconMac(
-        data,
-        abp.nwkskey,
-        abp.appskey,
-        devaddr,
-        abp.downlink,
-        200
-      )
-      // Update F_CNT for downlink
-      abp.downlink = abp.downlink + 1
-      devicesInfo.set(devaddr, { abp: abp })
       // 13 LoRaWAN protocol package
-      rfSize = data.length + 13
+      rfSize = data.length + 25
       console.log('Downlink device', devaddr)
       console.log('Downlink f_cnt:', abp.downlink)
     } else {
