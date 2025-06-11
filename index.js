@@ -676,8 +676,8 @@ const processJoinAccept = async (
     const dataInput = dataJoinAccept[2].toString('hex').toUpperCase()
     const msg = await processDownlinkMessage(dataInput, 0)
     // Wait for device to set receive window
-    console.log('Wait few seconds for device to set receive window')
-    await new Promise((resolve) => setTimeout(resolve, 5000))
+    console.log('Wait a bit for device to set receive window')
+    await new Promise((resolve) => setTimeout(resolve, 100))
     if (msg) {
       // Send data to gateway
       server.send(msg, GW_PORT, GW_ADDR)
