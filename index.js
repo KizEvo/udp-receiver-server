@@ -193,6 +193,7 @@ app.post('/admin/create-new-device', async (req, res) => {
     const nwkskey = ''
     const downlink = 0
     const uplink = 0
+    const appnonce = 0
     const created = Date.now()
     // Create document data
     const deviceSessionData = {
@@ -201,6 +202,7 @@ app.post('/admin/create-new-device', async (req, res) => {
       nwkskey,
       downlink,
       uplink,
+      appnonce,
       created: 0,
       joinAccept: false,
     }
@@ -639,24 +641,30 @@ const processJoinAccept = async (
       // Sanity check
       throw new Error('Device has not been provisioned yet:')
     }
+    // Next step: store this info (local and db)
+    const { otaa } = devicesInfo.get(loraNodeDevEUIBeStr)
+    if (!otaa) {
+      throw new Error('Device OTAA info is unvalid')
+    }
+
+    const { deviceData, deviceSessionData } = otaa
+    deviceSessionData.appnonce = deviceSessionData.appnonce + 1
     const data = {
-      appNonce: 'A0A0A0', // This will be fixed later, it need to be a number that is incremented whenever device send a join-request and server generate a join-accept
+      appNonce: deviceSessionData.appnonce.toString(16).padStart(6, '0'),
       devAddr: '0A' + generateRandomHex(6), // See NwkID for netID and DevAddr on OTAA
       devNonce: loraNodeDevNonceStr,
       dlSettings: '02', // RX1DROffset = 0 and RX2 is DR2
       rxDelay: '01', // Delay 1 second
       netId: '458C0A', // 7 LSB = 0A
     }
+
+    console.log(data)
+
     const dataJoinAccept = await lorawanProcessJoinAccept(data, appkey)
     if (dataJoinAccept == null) {
       throw new Error('Failed to process join-accept message')
     }
-    // Next step: store this info (local and db)
-    const { otaa } = devicesInfo.get(loraNodeDevEUIBeStr)
-    if (!otaa) {
-      throw new Error('Device OTAA info is unvalid')
-    }
-    const { deviceData, deviceSessionData } = otaa
+
     deviceSessionData.nwkskey = dataJoinAccept[0].toString('hex').toUpperCase()
     deviceSessionData.appskey = dataJoinAccept[1].toString('hex').toUpperCase()
     deviceSessionData.created = Date.now()
@@ -861,10 +869,6 @@ const networkServerProcessData = async (state, buff) => {
         }
 
         console.log(`RF captured data inst ${i}:`)
-        console.log(
-          'Actual time elapsed in microsec:',
-          data[ASCON_MAC_DATA_OFFSET.TIME_ELAPSED].readUInt32BE(0)
-        )
         console.log('DevAddress:', data[ASCON_MAC_DATA_OFFSET.DEV_ADDR])
         console.log('FPort:', data[ASCON_MAC_DATA_OFFSET.FPORT])
         console.log('MHDR:', data[ASCON_MAC_DATA_OFFSET.MHDR])
